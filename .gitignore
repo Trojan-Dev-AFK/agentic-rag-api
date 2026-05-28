@@ -1,0 +1,19 @@
+# Environments
+.env
+.venv/
+venv/
+
+# Python built-ins
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# PyCharm specific
+.idea/
+
+# macOS specific
+.DS_Store
+
+# Project specific
+uploads/

@@ -1,0 +1,26 @@
+# Spins up postgres (pgvector) and Redis
+version: "3.8"
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: agentic_rag_db
+    environment:
+      POSTGRES_USER: agenticraguser
+      POSTGRES_PASSWORD: agenticragpwd
+      POSTGRES_DB: rag_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: agentic_rag_redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
