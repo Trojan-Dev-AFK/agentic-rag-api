@@ -7,7 +7,7 @@ from app.db.models import Base
 from app.db.session import engine
 
 # Import your cleanly separated routers
-from app.api.v1.endpoints import chat, documents
+from app.api.v1.endpoints import chat, documents, auth
 
 # Ensure uploads directory exists on boot
 os.makedirs("uploads", exist_ok=True)
@@ -29,5 +29,6 @@ app = FastAPI(
 )
 
 # Wire up the routers
+app.include_router(auth.router, prefix="/v1/auth", tags=["Auth"])
 app.include_router(chat.router, prefix="/v1/chat", tags=["Agent"])
 app.include_router(documents.router, prefix="/v1/documents", tags=["Documents"])

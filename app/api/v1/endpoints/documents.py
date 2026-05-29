@@ -4,6 +4,7 @@ from fastapi import APIRouter, UploadFile, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from app.api.dependencies import require_admin
 from app.db.session import get_db
 from app.db.models import Document
 from app.worker.tasks import process_pdf_task
@@ -64,7 +65,7 @@ async def get_document(document_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("/{document_id}", status_code=204)
-async def delete_document(document_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_document(document_id: str, db: AsyncSession = Depends(get_db), current_user = Depends(require_admin)):
     """Delete a document and completely wipe its AI vectors from the database."""
     result = await db.execute(select(Document).filter(Document.id == document_id))
     doc = result.scalar_one_or_none()

@@ -38,3 +38,17 @@ class DocumentChunk(Base):
     embedding = Column(Vector(384))
 
     document = relationship("Document", back_populates="chunks")
+
+# 1. Define the roles
+class UserRole(str, enum.Enum):
+    ADMIN = "admin"
+    EMPLOYEE = "employee"
+
+# 2. Add the User table
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    username = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    role = Column(Enum(UserRole), default=UserRole.EMPLOYEE, nullable=False)
