@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.endpoints import chat
 from app.db.models import Base, Document
 from app.db.session import engine, get_db
 
@@ -32,6 +33,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Include Chat router
+app.include_router(chat.router, prefix="/v1/chat", tags=["Agent"])
 
 @app.post("/v1/documents/upload", status_code=202)
 async def upload_document(

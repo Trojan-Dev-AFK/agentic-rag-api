@@ -47,5 +47,30 @@
     - Celery (running in a completely separate terminal) picks up the message, does all the heavy PDF chunking and AI math, and updates the database to "COMPLETED" when it finishes.
     - Celery needs "export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES" to be executed in macos (silicon) to safely create background processes.
     - Run celery in single thread in macos locally → "celery -A app.worker.celery_app worker --pool=solo --loglevel=info"
+  - Verification till phase 2:
+    - Run "uvicorn app.main:app --reload" in one terminal
+    - Run "celery -A app.worker.celery_app worker --pool=solo --loglevel=info" in another terminal
+    - Go to 'http://127.0.0.1:8000/docs'
 - Phase 3:
-  - 
+  - The goal is to give a large language model, a set of instructions, some memory (state), and a "Tool" it can trigger whenever it realizes it needs to look up factural information.
+  - We are tackling this in three layers:
+    - The Tool: The python function that queries pgvector database.
+    - The State: The memory structure that tracks the conversation and the agent's scratchpad.
+    - The Graph: The routing logic that tells the agent how to loop and evaluate its own answers.
+  - Layer 1: Vector Search Architecture
+    - When agent decides it needs information, it will call our search tool with a query (e.g. "Q3 revenue numbers"). This tool must:
+      - Convert that string into a 384-dimension vector using the exact same HuggingFace model we used in the Celery worker.
+      - Run a mathematical similarity search (Cosine Distance) against the document_chunks table in PostgreSQL.
+      - Return the raw text back to the agent.
+  - Layer 2: The Graph State
+    - Unlinke traditional REST APIs that are stateless, and Agent needs a "scratchpad" or memory to hold the conversation history and track what it is doing across multiple reasoning loops. 
+    - LangGraph uses a standard Python TypedDict for this.
+  - Layer 3: The Orchestrator
+    - This is the brain. We are using a Directed Cyclic Graph (DCG).
+      - The user asks a question
+      - The Agen Node (the LLM) look at the question. It decides: Can I answer this normally, or do I need to use my search tool?
+      - If it needs the tool, it routes to the Tool Node.
+      - The Tool Node queries PostgreSQL and return the text.
+      - It loops back to the Agent Node to synthesize a final answer.
+  - Connect to API:
+    - The goal is to connect the agent to FastAPI endpoint.
