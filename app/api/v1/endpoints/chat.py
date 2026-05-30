@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Any
 from langchain_core.messages import HumanMessage
 
 from app.agent.graph import app_graph

@@ -1,61 +1,60 @@
-# Compiles the LangGraph state machine
-
-from langgraph.graph import StateGraph, END
+from typing import TypedDict, List, Optional, Annotated
+from langchain_core.messages import BaseMessage, SystemMessage
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_ollama import ChatOllama
-from langchain_core.messages import SystemMessage
 
-from app.agent.state import AgentState
+# 1. Import your custom tools
 from app.agent.tools.vector_search import search_documents
-
-# 1. Define the tools available to the agent
-tools = [search_documents]
-
-# 2. Initialize the completely FREE, local open-source LLM
-# Llama 3.1 (8B) has native tool-calling capabilities.
-llm = ChatOllama(model="llama3.1", temperature=0)
-llm_with_tools = llm.bind_tools(tools)
+from app.agent.tools.graph_generator import generate_graph
 
 
-# 3. Define the Agent Node Logic
-def call_model(state: AgentState):
+# 2. Define your Graph State
+class GraphState(TypedDict):
+    messages: Annotated[List[BaseMessage], add_messages]
+    document_id: Optional[str]
+
+
+# 3. Setup the tools list and node
+tools = [search_documents, generate_graph]
+tool_node = ToolNode(tools)
+
+# 4. Initialize ChatOllama with deterministic settings (temperature=0)
+llm = ChatOllama(
+    model="llama3.1",
+    temperature=0
+).bind_tools(tools)
+
+
+# 5. Define your model caller node
+def call_model(state: GraphState):
     messages = state["messages"]
 
-    # Inject the system prompt if this is the start of the conversation
-    if not any(isinstance(m, SystemMessage) for m in messages):
-        sys_msg = SystemMessage(
-            content="You are an expert data analysis assistant. Use your search tool to find factual information from the user's documents. Always base your answers on the retrieved data. Do not make up information."
+    system_instruction = SystemMessage(
+        content=(
+            "You are an expert financial and healthcare data assistant. "
+            "CRITICAL RULE: If the user asks for a chart, graph, plot, or visual "
+            "breakdown, you MUST use the 'generate_graph' tool. Do not simply describe "
+            "the data in text if a visual representation is requested. First, use "
+            "search_documents to gather numbers if necessary, then call generate_graph."
         )
-        messages = [sys_msg] + messages
+    )
 
-    # Call the local Llama 3.1 model
-    response = llm_with_tools.invoke(messages)
-
-    # Return the new message to be appended to the state
+    # Prepend system rules to conversation
+    full_messages = [system_instruction] + messages
+    response = llm.invoke(full_messages)
     return {"messages": [response]}
 
 
-# 4. Build the State Machine (The Graph)
-workflow = StateGraph(AgentState)
+# 6. Construct the State Machine Architecture
+workflow = StateGraph(GraphState)
 
-# Add our two nodes
 workflow.add_node("agent", call_model)
-workflow.add_node("tools", ToolNode(tools))
+workflow.add_node("tools", tool_node)
 
-# The graph always starts at the agent
-workflow.set_entry_point("agent")
-
-# 5. Add Conditional Routing
-# tools_condition automatically checks if Llama 3.1 requested a tool.
-# If yes -> route to "tools". If no -> route to END.
-workflow.add_conditional_edges(
-    "agent",
-    tools_condition,
-    {"tools": "tools", "__end__": END}
-)
-
-# After the tool runs, ALWAYS force it to go back to the agent to read the results
+workflow.add_edge(START, "agent")
+workflow.add_conditional_edges("agent", tools_condition)
 workflow.add_edge("tools", "agent")
 
-# Compile the graph into a runnable application
 app_graph = workflow.compile()

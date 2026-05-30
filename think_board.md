@@ -74,3 +74,10 @@
       - It loops back to the Agent Node to synthesize a final answer.
   - Connect to API:
     - The goal is to connect the agent to FastAPI endpoint.
+- Phase 4:
+  - Add RBAC for required endpoints ("admin", "employee").
+- Phase 5:
+  - Add another tool which can create graphs and charts if the user requests for it.
+  - We will create the graph data as Plotly object in JSON structure, so that frontend can show interactive graphs.
+- 
+- 

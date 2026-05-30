@@ -14,7 +14,7 @@ UPLOAD_DIR = "uploads"
 
 
 @router.post("/upload", status_code=202)
-async def upload_document(file: UploadFile, db: AsyncSession = Depends(get_db)):
+async def upload_document(file: UploadFile, db: AsyncSession = Depends(get_db), current_user = Depends(require_admin)):
     # 1. Create DB record
     new_doc = Document(filename=file.filename)
     db.add(new_doc)
