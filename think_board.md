@@ -74,7 +74,7 @@
       - It loops back to the Agent Node to synthesize a final answer.
   - Connect to API:
     - The goal is to connect the agent to FastAPI endpoint.
-- Phase 4:
+- Phase 4: ✅ COMPLETED
   - Add RBAC for required endpoints ("admin", "employee").
 - Phase 5:
   - Add another tool which can create graphs and charts if the user requests for it.
