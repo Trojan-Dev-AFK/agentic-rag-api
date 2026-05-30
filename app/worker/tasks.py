@@ -7,16 +7,17 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.core.config import settings
 from app.db.models import Document, ProcessingStatus, DocumentChunk
 from app.worker.celery_app import celery_app
 
 # Synchronous Database Setup
 # Notice we use standard 'postgresql://' here, not '+asyncpg'
-DATABASE_URL = "postgresql://agenticraguser:agenticragpwd@localhost:5432/rag_db"
+DATABASE_URL = settings.DATABASE_URL_SYNC
 engine = create_engine(DATABASE_URL)
 session_local = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+embedding_model = HuggingFaceEmbeddings(model_name=settings.EMBEDDING_MODEL)
 
 @celery_app.task(bind=True, name="process_pdf_task")
 def process_pdf_task(self, document_id: str, file_path:str):
@@ -40,8 +41,8 @@ def process_pdf_task(self, document_id: str, file_path:str):
         # We don't cut text randomly. This splitter tries to keep paragraphs
         # and sentences together so the AI doesn't lose context.
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,  # Roughly 200-250 words per chunk
-            chunk_overlap=200  # 200 characters overlap to bridge concepts
+            chunk_size=settings.CHUNK_SIZE,  # Roughly 200-250 words per chunk
+            chunk_overlap=settings.CHUNK_OVERLAP  # 200 characters overlap to bridge concepts
         )
         chunks = text_splitter.split_documents(raw_documents)
 

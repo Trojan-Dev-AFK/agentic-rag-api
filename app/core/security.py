@@ -3,10 +3,7 @@ from typing import Optional
 from jose import jwt
 import bcrypt
 
-# In production, this goes in your .env file!
-SECRET_KEY = "super-secret-development-key-do-not-use-in-prod"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
+from app.core.config import settings
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -14,8 +11,8 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:
         # bcrypt requires bytes, so we encode the strings to utf-8 first
         return bcrypt.checkpw(
-            plain_password.encode("utf-8"),
-            hashed_password.encode("utf-8")
+            plain_password.encode(settings.ENCODING),
+            hashed_password.encode(settings.ENCODING)
         )
     except Exception:
         # If the hash is malformed or invalid, fail safely
@@ -28,10 +25,10 @@ def get_password_hash(password: str) -> str:
     salt = bcrypt.gensalt()
 
     # Hash the password (must be bytes)
-    hashed_bytes = bcrypt.hashpw(password.encode("utf-8"), salt)
+    hashed_bytes = bcrypt.hashpw(password.encode(settings.ENCODING), salt)
 
     # Decode back to a string so it can be saved in PostgreSQL easily
-    return hashed_bytes.decode("utf-8")
+    return hashed_bytes.decode(settings.ENCODING)
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
@@ -40,8 +37,8 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
+        expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
 
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt

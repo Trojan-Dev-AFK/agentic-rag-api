@@ -3,9 +3,9 @@ from typing import Any, AsyncGenerator
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine, AsyncSession
 
-DATABASE_URL = "postgresql+asyncpg://agenticraguser:agenticragpwd@localhost:5432/rag_db"
+from app.core.config import settings
 
-engine = create_async_engine(DATABASE_URL, echo=True)
+engine = create_async_engine(settings.DATABASE_URL_ASYNC, echo=True)
 
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,

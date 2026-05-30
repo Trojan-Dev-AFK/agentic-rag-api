@@ -2,12 +2,13 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_core.tools import tool
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.db.models import DocumentChunk
 from app.db.session import AsyncSessionLocal
 
 # We load the exact same model used in our ingestion pipeline.
 # Initializing it here ensures it loads into memory once when the app starts.
-embeddings_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+embeddings_model = HuggingFaceEmbeddings(model_name=settings.EMBEDDING_MODEL)
 
 @tool
 # This LangChain decorator automatically inspects the function signature and the docstring.

@@ -2,11 +2,13 @@
 
 from celery import Celery
 
+from app.core.config import settings
+
 # Connect celery to our local Redis container
 celery_app = Celery(
     "rag_worker",
-    broker="redis://localhost:6379/0",
-    backend="redis://localhost:6379/0",
+    broker=settings.REDIS_URL,
+    backend=settings.REDIS_URL,
     include=["app.worker.tasks"]
 )
 

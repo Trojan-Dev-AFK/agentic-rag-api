@@ -5,13 +5,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 
+from app.core.config import settings
 from app.db.session import get_db
 from app.db.models import User, UserRole
 from app.core.security import (
     verify_password,
     get_password_hash,
-    create_access_token,
-    ACCESS_TOKEN_EXPIRE_MINUTES
+    create_access_token
 )
 
 router = APIRouter()
@@ -66,7 +66,7 @@ async def login_for_access_token(
         )
 
     # 3. Mint the JWT Token
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.username, "role": user.role},
         expires_delta=access_token_expires
