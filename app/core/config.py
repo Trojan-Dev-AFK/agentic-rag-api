@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # Encoding
     ENCODING: str
 
+    # Document upload
+    UPLOAD_DIR: str
+
     # This tells Pydantic to look for the .env file in the root directory
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

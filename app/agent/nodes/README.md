@@ -1,1 +1,0 @@
-# Individual agent reasoning steps

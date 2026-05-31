@@ -1,0 +1,39 @@
+[project]
+name = "agentic-rag-api"
+version = "0.1.0"
+description = "Enterprise API for Document Analysis"
+requires-python = ">=3.13"
+dependencies = [
+    # Web framework & server
+    "fastapi>=0.136",
+    "uvicorn>=0.48",
+    "python-multipart>=0.0.29",
+
+    # Database
+    "sqlalchemy[asyncio]>=2.0",
+    "alembic>=1.13",
+    "asyncpg>=0.31",
+    "psycopg2-binary>=2.9",
+    "pgvector>=0.4",
+
+    # Config & validation
+    "pydantic-settings>=2.14",
+
+    # Auth & security
+    "python-jose[cryptography]>=3.5",
+    "bcrypt>=5.0",
+
+    # Task queue
+    "celery[redis]>=5.6",
+
+    # AI / LangChain stack
+    "langchain-core>=1.4",
+    "langchain-huggingface>=1.2",
+    "langchain-ollama>=1.1",
+    "langchain-text-splitters>=1.1",
+    "langgraph>=1.2",
+    "sentence-transformers>=5.5",
+
+    # Document processing
+    "pypdf>=6.12",
+]

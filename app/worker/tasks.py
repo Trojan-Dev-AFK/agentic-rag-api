@@ -1,9 +1,9 @@
 # Ingestion: Chunking, embedding, saving
 import os
 
-from langchain_community.document_loaders import PyPDFLoader
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from pypdf import PdfReader
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -34,20 +34,17 @@ def process_pdf_task(self, document_id: str, file_path:str):
         db.commit()
 
         # Step B: Extract raw text from the PDF
-        loader = PyPDFLoader(file_path)
-        raw_documents = loader.load()
+        reader = PdfReader(file_path)
+        full_text = "\n".join(page.extract_text() or "" for page in reader.pages)
 
-        # Step C: The Chunking strategy
-        # We don't cut text randomly. This splitter tries to keep paragraphs
-        # and sentences together so the AI doesn't lose context.
+        # Step C: Split into overlapping chunks so the AI doesn't lose context at boundaries
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=settings.CHUNK_SIZE,  # Roughly 200-250 words per chunk
-            chunk_overlap=settings.CHUNK_OVERLAP  # 200 characters overlap to bridge concepts
+            chunk_size=settings.CHUNK_SIZE,
+            chunk_overlap=settings.CHUNK_OVERLAP,
         )
-        chunks = text_splitter.split_documents(raw_documents)
+        chunks = text_splitter.split_text(full_text)
 
-        for chunk in chunks:
-            text_content = chunk.page_content
+        for text_content in chunks:
             # Generate the vector array for this specific chunk
             vector = embedding_model.embed_query(text_content)
 

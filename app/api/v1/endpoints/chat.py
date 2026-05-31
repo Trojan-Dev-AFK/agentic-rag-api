@@ -1,23 +1,16 @@
 import json
-
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
 from langchain_core.messages import HumanMessage, ToolMessage
 
 from app.agent.graph import app_graph
+from app.api.dependencies import require_company_user
+from app.db.models import User
+from app.schemas.chat import ChatRequest, ChatResponse
 
 # 1. Initialize the router
 router = APIRouter()
-
-# 2. Define strict Pydantic schemas for request and response
-class ChatRequest(BaseModel):
-    query: str
-    document_id: Optional[str] = None  # Optional: Let the user filter by a specific PDF
-
-class ChatResponse(BaseModel):
-    response: str
-    graph: Optional[dict] = None  # Plotly payload if a chart was generated
 
 
 def _extract_graph_payload(messages) -> Optional[dict]:
@@ -38,12 +31,11 @@ def _extract_graph_payload(messages) -> Optional[dict]:
 
 # 3. The Endpoint
 @router.post("/invoke", response_model=ChatResponse)
-async def invoke_agent(request: ChatRequest):
+async def invoke_agent(request: ChatRequest, current_user: User = Depends(require_company_user)):
     try:
         # Step A: Format the user's input into LangGraph's expected state dictionary
         initial_state = {
-            "messages": [HumanMessage(content=request.query)],
-            "document_id": request.document_id
+            "messages": [HumanMessage(content=request.query)]
         }
 
         # Step B: Trigger the graph.

@@ -1,4 +1,4 @@
-from typing import TypedDict, List, Optional, Annotated
+from typing import TypedDict, List, Annotated
 from langchain_core.messages import BaseMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
@@ -13,7 +13,6 @@ from app.agent.tools.graph_generator import generate_graph
 # 2. Define your Graph State
 class GraphState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
-    document_id: Optional[str]
 
 
 # 3. Setup the tools list and node
