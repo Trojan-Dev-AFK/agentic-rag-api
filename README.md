@@ -56,9 +56,10 @@ Cross-company access on users and documents always returns **403** — not a sil
 ```
 1. Admin  POST /v1/documents/upload  (multipart PDF)
           │
-2.        FastAPI saves the PDF to disk (uploads/),
+2.        FastAPI saves the PDF via the storage backend
+          (LOCAL → uploads/{company_id}/, CLOUD_STORAGE → S3 BACKEND/{company_id}/),
           creates a Document row with status=PENDING,
-          fires process_pdf_task.delay(doc_id, file_path) → Redis queue,
+          fires process_pdf_task.delay(doc_id, storage_ref) → Redis queue,
           returns 202 immediately
           │
 3.        Celery worker picks up the task from Redis:
@@ -71,7 +72,7 @@ Cross-company access on users and documents always returns **403** — not a sil
           │     (all-MiniLM-L6-v2, same model used at query time)
           │   · inserts a DocumentChunk row (text + embedding)
           ├─ sets status = COMPLETED
-          └─ deletes the PDF file from disk
+          └─ deletes the PDF from storage (S3 or local disk)
 
 4. Admin  GET /v1/documents/{id}  →  { status: "COMPLETED" }
 ```
@@ -203,6 +204,7 @@ Interactive docs available at `/docs` when the server is running.
 | Agent framework | LangGraph |
 | Task queue | Celery + Redis |
 | Auth | JWT (`python-jose`) + bcrypt |
+| Cloud storage | `boto3` (AWS S3) |
 | Config | Pydantic Settings |
 | Dependency management | uv |
 
@@ -218,6 +220,8 @@ Interactive docs available at `/docs` when the server is running.
 | **LangGraph over a plain LLM call** | Enables a reasoning loop — the LLM can call tools multiple times before answering, which is required for retrieval-augmented generation and chart generation in the same turn. |
 | **TokenSession in DB** | Stateless JWTs cannot be revoked. Storing the `jti` lets logout work properly and enables per-session auditing (`ip_address`, `user_agent`, `issued_at`). |
 | **Alembic for migrations** | Schema is version-controlled and reproducible. The app refuses to start if `alembic upgrade head` hasn't been run — no silent schema drift. |
+| **Pluggable storage backend** | `DOCUMENT_STORAGE=LOCAL` for development; `DOCUMENT_STORAGE=CLOUD_STORAGE` for production S3. The Celery worker, upload endpoint, and delete endpoint all go through the same `StorageBackend` interface — switching backends requires only an env var change. |
+| **Structured JSON logging** | Every log line is a JSON object with `ts`, `level`, `logger`, `request_id`, `msg`, and any extra context fields. A `request_id` correlation ID is injected per HTTP request (via middleware) and per Celery task (via task ID), so all log lines for a single operation can be traced across the API and worker. SQL query logging is suppressed unless `LOG_LEVEL=DEBUG`. |
 
 ---
 
@@ -242,9 +246,16 @@ agentic-rag-api/
 │   │       └── graph_generator.py # Plotly chart generation tool
 │   ├── core/
 │   │   ├── config.py              # Pydantic Settings (.env loader)
-│   │   └── security.py            # JWT creation, bcrypt hashing
+│   │   ├── security.py            # JWT creation, bcrypt hashing
+│   │   ├── logger.py              # JSON structured logging, request-ID ContextVar, setup_logging()
+│   │   └── exceptions.py          # AppException hierarchy + global FastAPI exception handlers
+│   ├── storage/
+│   │   ├── __init__.py            # get_storage() factory — picks LOCAL or S3 backend
+│   │   ├── base.py                # abstract StorageBackend interface
+│   │   ├── local.py               # LocalStorage — uploads/{company_id}/{stem}_{DD-MM-YYYY_HH-MM-SS}.pdf
+│   │   └── s3.py                  # S3Storage — BACKEND/{company_id}/{stem}_{DD-MM-YYYY_HH-MM-SS}.pdf
 │   ├── db/
-│   │   ├── session.py             # async + sync SQLAlchemy engines
+│   │   ├── session.py             # async SQLAlchemy engine and session factory (FastAPI)
 │   │   └── models/
 │   │       ├── base.py            # declarative Base + ProcessingStatus enum
 │   │       ├── company.py         # Company model
@@ -270,7 +281,7 @@ agentic-rag-api/
 ├── tests/
 ├── docker-compose.yml             # PostgreSQL (pgvector) + Redis
 ├── pyproject.toml                 # uv dependencies
-├── uv.lock                        # pinned lockfile (125 packages)
+├── uv.lock                        # pinned lockfile (129 packages)
 └── alembic.ini                    # Alembic config (URL injected from settings)
 ```
 
@@ -301,8 +312,18 @@ CHUNK_OVERLAP=200
 # Encoding
 ENCODING=utf-8
 
-# File upload
-UPLOAD_DIR=uploads
+# Logging (optional — defaults to INFO)
+# LOG_LEVEL=DEBUG   # DEBUG also enables SQLAlchemy query logging
+
+# Document storage: LOCAL or CLOUD_STORAGE
+DOCUMENT_STORAGE=LOCAL
+LOCAL_UPLOAD_DIR=uploads   # only used when DOCUMENT_STORAGE=LOCAL
+
+# AWS S3 (only required when DOCUMENT_STORAGE=CLOUD_STORAGE)
+# AWS_ACCESS_KEY_ID=
+# AWS_SECRET_ACCESS_KEY=
+# AWS_REGION=ap-south-1
+# S3_BUCKET_NAME=agentic-rag-api
 ```
 
 ---

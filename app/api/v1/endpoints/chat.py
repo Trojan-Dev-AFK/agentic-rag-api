@@ -1,23 +1,23 @@
-import json
-from typing import Optional
+"""Chat endpoint — submits a query to the LangGraph RAG agent."""
 
-from fastapi import APIRouter, Depends, HTTPException
+import json
+import time
+
+from fastapi import APIRouter, Depends
 from langchain_core.messages import HumanMessage, ToolMessage
 
 from app.agent.graph import app_graph
 from app.api.dependencies import require_company_user
+from app.core.exceptions import AgentError
+from app.core.logger import get_logger
 from app.db.models import User
 from app.schemas.chat import ChatRequest, ChatResponse
 
-# 1. Initialize the router
+logger = get_logger(__name__)
 router = APIRouter()
 
 
-def _extract_graph_payload(messages) -> Optional[dict]:
-    """
-    Walk backward through the message history to find a ToolMessage
-    from generate_graph that contains a valid Plotly payload.
-    """
+def _extract_graph_payload(messages) -> dict | None:
     for msg in reversed(messages):
         if isinstance(msg, ToolMessage) and msg.name == "generate_graph":
             try:
@@ -29,28 +29,67 @@ def _extract_graph_payload(messages) -> Optional[dict]:
     return None
 
 
-# 3. The Endpoint
-@router.post("/invoke", response_model=ChatResponse)
-async def invoke_agent(request: ChatRequest, current_user: User = Depends(require_company_user)):
+@router.post(
+    "/invoke",
+    response_model=ChatResponse,
+    responses={
+        403: {"description": "Forbidden — `super_admin` accounts cannot use chat."},
+        502: {"description": "Agent service unavailable — LLM or tool call failed."},
+    },
+)
+async def invoke_agent(
+    request: ChatRequest,
+    current_user: User = Depends(require_company_user),
+):
+    """
+    Submit a natural-language query to the RAG agent.
+
+    The agent follows a reasoning loop (LangGraph):
+    1. Calls `search_documents` to retrieve relevant text from uploaded PDFs.
+    2. Optionally calls `generate_graph` if the user requests a chart.
+    3. Returns a final text answer and an optional Plotly figure payload.
+
+    **Access:** `admin` and `employee` only. `super_admin` receives **403**.
+    """
+    logger.info(
+        "Chat query received",
+        extra={
+            "user_id": current_user.id,
+            "role": str(current_user.role),
+            "company_id": current_user.company_id,
+            "query_preview": request.query[:120],
+        },
+    )
+
+    start = time.monotonic()
     try:
-        # Step A: Format the user's input into LangGraph's expected state dictionary
-        initial_state = {
-            "messages": [HumanMessage(content=request.query)]
-        }
-
-        # Step B: Trigger the graph.
-        # We use .ainvoke() because FastAPI is asynchronous and our tool (search_documents) is async.
+        initial_state = {"messages": [HumanMessage(content=request.query)]}
         final_state = await app_graph.ainvoke(initial_state)
+    except Exception as exc:
+        elapsed = time.monotonic() - start
+        logger.error(
+            "Agent invocation failed",
+            extra={
+                "user_id": current_user.id,
+                "company_id": current_user.company_id,
+                "elapsed_s": round(elapsed, 3),
+            },
+            exc_info=exc,
+        )
+        raise AgentError("The agent failed to process your request. Please try again.") from exc
 
-        # Step C: Extract the final text from the Agent's last message
-        final_message = final_state["messages"][-1].content
+    elapsed = time.monotonic() - start
+    final_message = final_state["messages"][-1].content
+    graph_payload = _extract_graph_payload(final_state["messages"])
 
-        # Step D: Check if a graph was generated during the agent loop
-        graph_payload = _extract_graph_payload(final_state["messages"])
-
-        return ChatResponse(response=final_message, graph=graph_payload)
-
-    except Exception as e:
-        # Catch any LLM timeouts or database errors and return a clean 500
-        raise HTTPException(status_code=500, detail=f"Agent orchestration failed: {str(e)}")
-
+    logger.info(
+        "Chat response ready",
+        extra={
+            "user_id": current_user.id,
+            "company_id": current_user.company_id,
+            "elapsed_s": round(elapsed, 3),
+            "has_graph": graph_payload is not None,
+            "message_turns": len(final_state["messages"]),
+        },
+    )
+    return ChatResponse(response=final_message, graph=graph_payload)

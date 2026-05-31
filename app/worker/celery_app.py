@@ -1,15 +1,25 @@
-# Celery worker configuration
+"""
+Celery application instance.
+
+Connects to Redis (broker + result backend) and registers the task module
+``app.worker.tasks``. All tasks use JSON serialisation and operate in UTC.
+
+Start a worker with:
+    celery -A app.worker.celery_app worker --pool=solo --loglevel=info
+
+On macOS set ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`` before starting
+to avoid fork-safety warnings from Apple's Objective-C runtime.
+"""
 
 from celery import Celery
 
 from app.core.config import settings
 
-# Connect celery to our local Redis container
 celery_app = Celery(
     "rag_worker",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["app.worker.tasks"]
+    include=["app.worker.tasks"],
 )
 
 celery_app.conf.update(
