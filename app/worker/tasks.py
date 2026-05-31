@@ -96,6 +96,12 @@ def process_pdf_task(self, document_id: str, storage_ref: str):
             extra={"doc_id": document_id, "pages": page_count, "chars": len(full_text)},
         )
 
+        if not full_text or not full_text.strip():
+            logger.warning(
+                "PDF contains no extractable text — possible blank or image-only PDF",
+                extra={"doc_id": document_id, "pages": page_count},
+            )
+
         chunks = _get_text_splitter().split_text(full_text)
         logger.info(
             "Text split into chunks",

@@ -3,10 +3,12 @@ FastAPI dependencies for authentication and role-based access control.
 
 Every protected endpoint declares one of these as a ``Depends()`` parameter:
 
-- ``get_current_user``    — decodes the JWT and validates the TokenSession row.
-- ``require_company_user`` — blocks ``super_admin``; allows ``admin`` and ``employee``.
-- ``require_super_admin``  — allows ``super_admin`` only.
-- ``require_admin``        — allows company-scoped ``admin`` only (must have ``company_id``).
+- ``get_current_user``          — decodes the JWT and validates the TokenSession row.
+- ``require_company_user``      — blocks ``super_admin``; allows ``admin`` and ``employee``.
+- ``require_super_admin``       — allows ``super_admin`` only.
+- ``require_admin``             — allows company-scoped ``admin`` only (must have ``company_id``).
+- ``require_admin_or_super_admin`` — allows ``super_admin`` (any company) and ``admin``
+                                     (own company). Blocks ``employee``.
 """
 
 from datetime import UTC, datetime
@@ -73,7 +75,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
 
 
 def require_company_user(current_user: User = Depends(get_current_user)):
-    """Allows ADMIN and EMPLOYEE. Blocks SUPER_ADMIN (they have no company)."""
+    """Allow ``admin`` and ``employee``. Block ``super_admin`` (they have no company)."""
     if current_user.role == UserRole.SUPER_ADMIN:
         logger.warning(
             "Super admin attempted to access company-only endpoint",
@@ -87,6 +89,7 @@ def require_company_user(current_user: User = Depends(get_current_user)):
 
 
 def require_super_admin(current_user: User = Depends(get_current_user)):
+    """Allow ``super_admin`` only."""
     if current_user.role != UserRole.SUPER_ADMIN:
         logger.warning(
             "Non-super-admin attempted super-admin endpoint",
@@ -100,11 +103,30 @@ def require_super_admin(current_user: User = Depends(get_current_user)):
 
 
 def require_admin(current_user: User = Depends(get_current_user)):
-    """Company-scoped admin. Must have ADMIN role and belong to a company."""
+    """Allow company-scoped ``admin`` only. Must have ``ADMIN`` role and a ``company_id``."""
     if current_user.role != UserRole.ADMIN or current_user.company_id is None:
         logger.warning(
             "Insufficient role for admin endpoint",
             extra={"user_id": current_user.id, "role": current_user.role},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to perform this action.",
+        )
+    return current_user
+
+
+def require_admin_or_super_admin(current_user: User = Depends(get_current_user)):
+    """
+    Allow ``super_admin`` (platform-wide access) and company ``admin`` (own company only).
+
+    Blocks ``employee``. Used on user-management endpoints where ``super_admin``
+    needs cross-company access to bootstrap the first admin for each company.
+    """
+    if current_user.role == UserRole.EMPLOYEE:
+        logger.warning(
+            "Employee attempted user-management endpoint",
+            extra={"user_id": current_user.id},
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

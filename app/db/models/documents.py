@@ -26,7 +26,10 @@ class Document(Base):
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     filename = Column(String, nullable=False)
-    status = Column(Enum(ProcessingStatus), default=ProcessingStatus.PENDING)
+    status = Column(
+        Enum(ProcessingStatus, values_callable=lambda x: [e.value for e in x]),
+        default=ProcessingStatus.PENDING,
+    )
     company_id = Column(String, ForeignKey("companies.id", ondelete="CASCADE"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

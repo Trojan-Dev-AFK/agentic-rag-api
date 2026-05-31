@@ -3,13 +3,13 @@
 import enum
 import uuid
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, String, func
+from sqlalchemy import Column, DateTime, Enum, ForeignKey, String, func, CheckConstraint
 from sqlalchemy.orm import relationship
 
 from app.db.models.base import Base
 
 
-class UserRole(enum.StrEnum):
+class UserRole(str, enum.Enum):
     """
     RBAC roles in order of decreasing platform scope.
 
@@ -33,6 +33,10 @@ class User(Base):
     Cascade rules:
     - Deleting a user cascades to all their token sessions.
     - Deleting the parent company sets ``company_id`` to NULL (SET NULL).
+    
+    Constraints:
+    - super_admin users must have company_id = NULL
+    - admin and employee users must have company_id != NULL
     """
 
     __tablename__ = "users"
@@ -40,9 +44,17 @@ class User(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     username = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
-    role = Column(Enum(UserRole), default=UserRole.EMPLOYEE, nullable=False)
+    role = Column(
+        Enum(UserRole, values_callable=lambda x: [e.value for e in x]),
+        default=UserRole.EMPLOYEE,
+        nullable=False,
+    )
     company_id = Column(String, ForeignKey("companies.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("(role = 'super_admin' AND company_id IS NULL) OR (role != 'super_admin' AND company_id IS NOT NULL)", name="check_super_admin_no_company"),
+    )
 
     company = relationship("Company", back_populates="users")
     sessions = relationship("TokenSession", back_populates="user", cascade="all, delete-orphan")

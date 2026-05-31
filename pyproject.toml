@@ -61,6 +61,9 @@ ignore = [
     "E501",   # line too long — enforced by black instead
     "B008",   # do not perform function calls in default arguments (FastAPI Depends())
     "UP007",  # use X | Y for union types — Optional kept for broad compatibility in signatures
+    "UP042",  # (str, enum.Enum) → StrEnum breaks SQLAlchemy's column value resolver;
+              # SQLAlchemy uses .name (uppercase) for StrEnum instead of .value,
+              # causing InvalidTextRepresentationError against lowercase DB enum labels
 ]
 
 [tool.ruff.lint.isort]

@@ -29,9 +29,9 @@ Three separate processes handle different concerns:
 │                                                                      │
 │  Middleware                  Routers                                 │
 │  ├─ RequestIDMiddleware       ├─ /v1/auth      (public + authed)     │
-│  ├─ ExceptionMiddleware       ├─ /v1/companies (super_admin)         │
-│  └─ (Starlette internals)     ├─ /v1/users     (admin)               │
-│                               ├─ /v1/documents (admin)               │
+│  ├─ ExceptionMiddleware       ├─ /v1/companies (super_admin only)    │
+│  └─ (Starlette internals)     ├─ /v1/users     (admin + super_admin) │
+│                               ├─ /v1/documents (admin + super_admin) │
 │                               └─ /v1/chat      (admin + employee)    │
 │                                                                      │
 │  Dependencies (app/api/dependencies.py)                              │
@@ -181,18 +181,118 @@ See [README.md](../README.md) for the full schema table. Key design points:
 
 ## RBAC model
 
-Three roles, enforced in `app/api/dependencies.py`:
+Four roles define the permission hierarchy:
 
+| Role | Company Affiliation | Permissions |
+|------|-------------------|-----------|
+| `super_admin` | None (platform operator) | Full cross-company access; can create/manage companies and their first admins; cannot use chat |
+| `admin` | Single company | Can create/manage users and documents in their company; can use chat |
+| `employee` | Single company | Can use chat only; no management access |
+| `guest` (not used) | — | — |
+
+### Data Integrity Constraints
+
+The database enforces a **CHECK constraint** at the table level:
+
+```sql
+CHECK (
+  (role = 'super_admin' AND company_id IS NULL) 
+  OR 
+  (role != 'super_admin' AND company_id IS NOT NULL)
+)
 ```
-super_admin  ─── no company ─── can: create/read/update/delete companies
-                                 cannot: access users, documents, chat
 
-admin        ─── company_id ─── can: CRUD users in own company
-                              ─── can: CRUD documents in own company
-                              ─── can: use chat
-                                 cannot: cross-company access (hard 403)
+This ensures:
+- `super_admin` users **never have a company affiliation** (company_id is always NULL)
+- `admin` and `employee` users **always belong to exactly one company**
 
-employee     ─── company_id ─── can: use chat only
-```
+The constraint is enforced at the database level, preventing accidental cross-role 
+assignment at the ORM or application level.
 
-Cross-company access always returns `403 Forbidden`, never a silent empty result.
+### Role Hierarchy and Access Rules
+
+Enforced in `app/api/dependencies.py`:
+
+**Companies Endpoints (`/v1/companies/`)**
+- `super_admin`: full CRUD
+- `admin`: no access (403)
+- `employee`: no access (403)
+
+**Users Endpoints (`/v1/users/`)**
+- `super_admin`: full cross-company CRUD (can create any role except another super_admin)
+- `admin`: CRUD users within own company only; cannot promote users to super_admin
+- `employee`: no access (403)
+
+**Documents Endpoints (`/v1/documents/`)**
+- `super_admin`: full cross-company CRUD; can upload/list/delete any document or filter by company
+- `admin`: CRUD documents within own company only
+- `employee`: no access (403)
+
+**Chat Endpoint (`/v1/chat/`)**
+- `super_admin`: blocked (403) — platform operators do not query documents
+- `admin`: full access
+- `employee`: full access
+
+### Onboarding Workflow
+
+**Scenario:** A new company joins the platform.
+
+1. **super_admin** creates the company:
+   ```
+   POST /v1/companies/
+   { "name": "Acme Corp", "industry": "Manufacturing", ... }
+   ```
+
+2. **super_admin** creates the first company admin (bootstrap only way):
+   ```
+   POST /v1/users/
+   {
+     "username": "admin@acme",
+     "password": "...",
+     "role": "admin",
+     "company_id": "<company-uuid>"
+   }
+   ```
+
+3. **admin@acme** logs in:
+   ```
+   POST /v1/auth/login
+   username=admin@acme&password=...
+   ```
+   Returns: JWT with claims `role: "admin"`, `company_id: "..."`, `jti: "..."`
+
+4. **admin@acme** creates employees:
+   ```
+   POST /v1/users/
+   {
+     "username": "employee1@acme",
+     "password": "...",
+     "role": "employee",
+     "company_id": "<company-uuid>"  // must match their own company
+   }
+   ```
+
+5. **admin@acme** uploads documents:
+   ```
+   POST /v1/documents/upload
+   file=<PDF>
+   // Automatically scoped to admin's company
+   ```
+
+6. **employee1@acme** logs in and can query via chat:
+   ```
+   POST /v1/auth/login
+   username=employee1@acme&password=...
+
+   POST /v1/chat/invoke
+   { "query": "..." }  // Searches vectors for their company only
+   ```
+
+### Critical Security Design
+
+- **No public registration endpoint** — all user creation is admin-controlled (super_admin → admin → employees).
+- **JWT sessions tracked in DB** — login creates a `TokenSession` row; logout revokes it; token replay is caught.
+- **Cross-company access always 403** — never silent empty results; always explicit error.
+- **super_admin cannot be promoted via API** — only created via bootstrap script.
+- **Role downgrade is allowed** — an admin can demote themselves to employee, but only `super_admin` can re-promote them to admin.
+

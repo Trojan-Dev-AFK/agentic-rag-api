@@ -12,9 +12,21 @@ from app.db.session import AsyncSessionLocal
 
 logger = get_logger(__name__)
 
-logger.info("Loading embedding model for vector search", extra={"model": settings.EMBEDDING_MODEL})
-embeddings_model = HuggingFaceEmbeddings(model_name=settings.EMBEDDING_MODEL)
-logger.info("Embedding model ready")
+# Lazy singleton — loaded on the first search_documents call, not at import time.
+# Uvicorn --reload spawns a reloader process and a worker process; both import
+# every module. Eager loading here would load the model twice (once per process)
+# even though only the worker process ever runs queries.
+_embeddings_model: HuggingFaceEmbeddings | None = None
+
+
+def _get_embeddings_model() -> HuggingFaceEmbeddings:
+    """Return the process-level embedding model, loading it on first call."""
+    global _embeddings_model
+    if _embeddings_model is None:
+        logger.info("Loading embedding model for vector search", extra={"model": settings.EMBEDDING_MODEL})
+        _embeddings_model = HuggingFaceEmbeddings(model_name=settings.EMBEDDING_MODEL)
+        logger.info("Embedding model ready")
+    return _embeddings_model
 
 
 @tool
@@ -26,7 +38,7 @@ async def search_documents(query: str) -> str:
     logger.info("Vector search invoked", extra={"query_preview": query[:120]})
 
     try:
-        query_vector = embeddings_model.embed_query(query)
+        query_vector = _get_embeddings_model().embed_query(query)
     except Exception as exc:
         logger.error("Embedding generation failed", exc_info=exc)
         return "Search is temporarily unavailable. Please try again."

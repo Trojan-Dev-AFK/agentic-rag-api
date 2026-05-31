@@ -4,11 +4,11 @@ Revision ID: 0001
 Revises:
 Create Date: 2026-05-31
 """
+
 from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
-from pgvector.sqlalchemy import Vector
 
 revision: str = "0001"
 down_revision: Union[str, None] = None
@@ -17,79 +17,126 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    # Pure SQL throughout so SQLAlchemy's SchemaGenerator never fires.
+    # op.create_table() triggers visit_enum() internally, which re-creates
+    # enum types even with create_type=False, causing DuplicateObjectError
+    # in the async asyncpg migration context.
 
-    userrole = sa.Enum("super_admin", "admin", "employee", name="userrole")
-    processingstatus = sa.Enum("PENDING", "PROCESSING", "COMPLETED", "FAILED", name="processingstatus")
-    userrole.create(op.get_bind())
-    processingstatus.create(op.get_bind())
+    op.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
 
-    op.create_table(
-        "companies",
-        sa.Column("id", sa.String(), nullable=False),
-        sa.Column("name", sa.String(), nullable=False),
-        sa.Column("industry", sa.String(), nullable=True),
-        sa.Column("description", sa.String(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index("ix_companies_name", "companies", ["name"], unique=True)
+    # PostgreSQL has no CREATE TYPE IF NOT EXISTS.
+    # The DO block checks whether the type exists AND has the expected values.
+    # If the type exists but was created by an old schema (wrong labels), it is
+    # dropped and recreated so the column DDL below succeeds.
+    op.execute(sa.text("""
+        DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'userrole') THEN
+                -- Verify the expected label 'super_admin' is present
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_enum e
+                    JOIN pg_type t ON t.oid = e.enumtypid
+                    WHERE t.typname = 'userrole' AND e.enumlabel = 'super_admin'
+                ) THEN
+                    DROP TYPE userrole CASCADE;
+                    CREATE TYPE userrole AS ENUM ('super_admin', 'admin', 'employee');
+                END IF;
+            ELSE
+                CREATE TYPE userrole AS ENUM ('super_admin', 'admin', 'employee');
+            END IF;
+        END $$
+    """))
+    op.execute(sa.text("""
+        DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'processingstatus') THEN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_enum e
+                    JOIN pg_type t ON t.oid = e.enumtypid
+                    WHERE t.typname = 'processingstatus' AND e.enumlabel = 'FAILED'
+                ) THEN
+                    DROP TYPE processingstatus CASCADE;
+                    CREATE TYPE processingstatus AS ENUM ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED');
+                END IF;
+            ELSE
+                CREATE TYPE processingstatus AS ENUM ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED');
+            END IF;
+        END $$
+    """))
 
-    op.create_table(
-        "users",
-        sa.Column("id", sa.String(), nullable=False),
-        sa.Column("username", sa.String(), nullable=False),
-        sa.Column("hashed_password", sa.String(), nullable=False),
-        sa.Column("role", sa.Enum("super_admin", "admin", "employee", name="userrole", create_type=False), nullable=False),
-        sa.Column("company_id", sa.String(), sa.ForeignKey("companies.id", ondelete="SET NULL"), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index("ix_users_username", "users", ["username"], unique=True)
+    op.execute(sa.text("""
+        CREATE TABLE IF NOT EXISTS companies (
+            id          VARCHAR      NOT NULL,
+            name        VARCHAR      NOT NULL,
+            industry    VARCHAR,
+            description VARCHAR,
+            created_at  TIMESTAMPTZ  DEFAULT now(),
+            PRIMARY KEY (id)
+        )
+    """))
+    op.execute(sa.text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_companies_name ON companies (name)"
+    ))
 
-    op.create_table(
-        "token_sessions",
-        sa.Column("id", sa.String(), nullable=False),
-        sa.Column("user_id", sa.String(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("jti", sa.String(), nullable=False),
-        sa.Column("issued_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("logout_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("ip_address", sa.String(), nullable=True),
-        sa.Column("user_agent", sa.String(), nullable=True),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index("ix_token_sessions_jti", "token_sessions", ["jti"], unique=True)
+    op.execute(sa.text("""
+        CREATE TABLE IF NOT EXISTS users (
+            id              VARCHAR      NOT NULL,
+            username        VARCHAR      NOT NULL,
+            hashed_password VARCHAR      NOT NULL,
+            role            userrole     NOT NULL DEFAULT 'employee',
+            company_id      VARCHAR      REFERENCES companies(id) ON DELETE SET NULL,
+            created_at      TIMESTAMPTZ  DEFAULT now(),
+            PRIMARY KEY (id)
+        )
+    """))
+    op.execute(sa.text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username ON users (username)"
+    ))
 
-    op.create_table(
-        "documents",
-        sa.Column("id", sa.String(), nullable=False),
-        sa.Column("filename", sa.String(), nullable=False),
-        sa.Column("status", sa.Enum("PENDING", "PROCESSING", "COMPLETED", "FAILED", name="processingstatus", create_type=False), nullable=True),
-        sa.Column("company_id", sa.String(), sa.ForeignKey("companies.id", ondelete="CASCADE"), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.PrimaryKeyConstraint("id"),
-    )
+    op.execute(sa.text("""
+        CREATE TABLE IF NOT EXISTS token_sessions (
+            id          VARCHAR      NOT NULL,
+            user_id     VARCHAR      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            jti         VARCHAR      NOT NULL,
+            issued_at   TIMESTAMPTZ  DEFAULT now(),
+            expires_at  TIMESTAMPTZ  NOT NULL,
+            revoked_at  TIMESTAMPTZ,
+            logout_at   TIMESTAMPTZ,
+            ip_address  VARCHAR,
+            user_agent  VARCHAR,
+            PRIMARY KEY (id)
+        )
+    """))
+    op.execute(sa.text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_token_sessions_jti ON token_sessions (jti)"
+    ))
 
-    op.create_table(
-        "document_chunks",
-        sa.Column("id", sa.String(), nullable=False),
-        sa.Column("document_id", sa.String(), sa.ForeignKey("documents.id", ondelete="CASCADE"), nullable=True),
-        sa.Column("text_content", sa.String(), nullable=False),
-        sa.Column("embedding", Vector(384), nullable=True),
-        sa.PrimaryKeyConstraint("id"),
-    )
+    op.execute(sa.text("""
+        CREATE TABLE IF NOT EXISTS documents (
+            id          VARCHAR          NOT NULL,
+            filename    VARCHAR          NOT NULL,
+            status      processingstatus DEFAULT 'PENDING',
+            company_id  VARCHAR          REFERENCES companies(id) ON DELETE CASCADE,
+            created_at  TIMESTAMPTZ      DEFAULT now(),
+            PRIMARY KEY (id)
+        )
+    """))
+
+    op.execute(sa.text("""
+        CREATE TABLE IF NOT EXISTS document_chunks (
+            id           VARCHAR   NOT NULL,
+            document_id  VARCHAR   REFERENCES documents(id) ON DELETE CASCADE,
+            text_content VARCHAR   NOT NULL,
+            embedding    vector(384),
+            PRIMARY KEY (id)
+        )
+    """))
 
 
 def downgrade() -> None:
-    op.drop_table("document_chunks")
-    op.drop_table("documents")
-    op.drop_table("token_sessions")
-    op.drop_table("users")
-    op.drop_table("companies")
-
-    sa.Enum(name="processingstatus").drop(op.get_bind())
-    sa.Enum(name="userrole").drop(op.get_bind())
-
-    op.execute("DROP EXTENSION IF EXISTS vector")
+    op.execute(sa.text("DROP TABLE IF EXISTS document_chunks"))
+    op.execute(sa.text("DROP TABLE IF EXISTS documents"))
+    op.execute(sa.text("DROP TABLE IF EXISTS token_sessions"))
+    op.execute(sa.text("DROP TABLE IF EXISTS users"))
+    op.execute(sa.text("DROP TABLE IF EXISTS companies"))
+    op.execute(sa.text("DROP TYPE IF EXISTS processingstatus"))
+    op.execute(sa.text("DROP TYPE IF EXISTS userrole"))
+    op.execute(sa.text("DROP EXTENSION IF EXISTS vector"))

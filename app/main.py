@@ -106,9 +106,11 @@ _TAGS_METADATA = [
         "name": "Users",
         "description": (
             "Manage users inside a company. "
-            "**Restricted to company `admin` accounts.** "
-            "Admins can only see and modify users within their own company — "
-            "any cross-company attempt returns **403**."
+            "Accessible by **`super_admin`** (any company) and **`admin`** (own company only). "
+            "`employee` receives **403** on all user endpoints. "
+            "Neither role may assign the `super_admin` role — use `scripts/create_superadmin.py` for that. "
+            "**Onboarding flow:** super_admin creates a company → creates the first admin for it → "
+            "that admin manages subsequent users."
         ),
     },
     {

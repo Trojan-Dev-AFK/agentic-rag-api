@@ -7,7 +7,7 @@ from sqlalchemy.orm import declarative_base
 Base = declarative_base()
 
 
-class ProcessingStatus(enum.StrEnum):
+class ProcessingStatus(str, enum.Enum):
     """Lifecycle states of a PDF document through the Celery ingestion pipeline."""
 
     PENDING = "PENDING"
