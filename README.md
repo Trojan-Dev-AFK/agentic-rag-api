@@ -1,163 +1,35 @@
 # Agentic RAG API
 
-A multi-tenant REST API that lets companies upload PDF documents and interrogate them through a conversational AI agent. Each company's data is fully isolated. The platform operator manages companies; company admins manage their own users and documents; employees chat with the agent.
+A multi-tenant REST API that lets companies upload PDF documents and interrogate them
+through a conversational AI agent. Each company's data is fully isolated.
 
 ---
 
 ## Roles
 
-| Role | `company_id` | Description |
-|------|-------------|-------------|
-| `super_admin` | `null` | Platform-level. Creates and manages companies. No access to company data or chat. |
-| `admin` | required | Company-level. Manages users and documents within their own company only. |
-| `employee` | required | Company-level. Chat access only. |
+| Role | `company_id` | Capabilities |
+|------|-------------|--------------|
+| `super_admin` | `null` | Create and manage companies. No access to company data or chat. |
+| `admin` | required | Manage users and documents within their own company. Use chat. |
+| `employee` | required | Use chat only. |
 
-Cross-company access on users and documents always returns **403** — not a silent filter.
-
----
-
-## System architecture
-
-```
-┌─────────────────────────────────────────────────┐
-│                  FastAPI (HTTP)                  │
-│  /v1/auth  /v1/companies  /v1/users              │
-│  /v1/documents  /v1/chat                         │
-└────────────┬───────────────────┬────────────────┘
-             │                   │
-   PDF upload │        chat query │
-             ▼                   ▼
-┌────────────────┐   ┌───────────────────────────┐
-│  Celery Worker │   │     LangGraph Agent        │
-│  (PDF ingestion│   │  ┌─────────┐  ┌─────────┐ │
-│   chunking +   │   │  │  Agent  │→ │  Tools  │ │
-│   embeddings)  │   │  │  (LLM)  │← │  node   │ │
-└───────┬────────┘   └──────────────────┬────────┘
-        │                               │
-        ▼                               ▼
-┌──────────────────────────────────────────────────┐
-│          PostgreSQL 16 + pgvector                │
-│  companies / users / token_sessions              │
-│  documents / document_chunks (Vector 384)        │
-└──────────────────────────────────────────────────┘
-        ▲
-        │ broker + backend
-┌───────┴──────┐
-│    Redis     │
-└──────────────┘
-```
+Cross-company access on users and documents always returns **403** — never a silent filter.
 
 ---
 
-## Data flows
+## Quick start
 
-### 1. Document ingestion
-
-```
-1. Admin  POST /v1/documents/upload  (multipart PDF)
-          │
-2.        FastAPI saves the PDF via the storage backend
-          (LOCAL → uploads/{company_id}/, CLOUD_STORAGE → S3 BACKEND/{company_id}/),
-          creates a Document row with status=PENDING,
-          fires process_pdf_task.delay(doc_id, storage_ref) → Redis queue,
-          returns 202 immediately
-          │
-3.        Celery worker picks up the task from Redis:
-          ├─ sets status = PROCESSING
-          ├─ reads PDF pages with pypdf.PdfReader
-          ├─ splits full text into overlapping chunks
-          │  (RecursiveCharacterTextSplitter, configurable size/overlap)
-          ├─ for each chunk:
-          │   · generates a 384-dim vector via HuggingFaceEmbeddings
-          │     (all-MiniLM-L6-v2, same model used at query time)
-          │   · inserts a DocumentChunk row (text + embedding)
-          ├─ sets status = COMPLETED
-          └─ deletes the PDF from storage (S3 or local disk)
-
-4. Admin  GET /v1/documents/{id}  →  { status: "COMPLETED" }
+```bash
+uv sync --group dev       # install all dependencies
+cp .env.example .env      # configure environment
+docker-compose up -d      # start PostgreSQL + Redis
+alembic upgrade head      # apply migrations
+uvicorn app.main:app --reload
 ```
 
-### 2. Chat query
+Interactive API docs: `http://localhost:8000/docs`
 
-```
-1. User   POST /v1/chat/invoke  { "query": "What was Q3 revenue?" }
-          │
-2.        FastAPI authenticates the JWT, blocks super_admin,
-          passes the query to LangGraph app_graph.ainvoke()
-          │
-3.        LangGraph reasoning loop (Directed Cyclic Graph):
-          │
-          ├─ Agent node (Ollama llama3.1, temperature=0):
-          │   reads the conversation history + system prompt,
-          │   decides: answer directly OR call a tool
-          │
-          ├─ Tool node (if needed):
-          │   · search_documents(query):
-          │     - embeds the query with the same HuggingFace model
-          │     - runs cosine distance search against document_chunks
-          │     - returns top-5 matching text chunks
-          │   · generate_graph(data_json):
-          │     - builds a Plotly figure from structured JSON
-          │     - returns the figure spec as a JSON payload
-          │
-          └─ loops back to Agent node to synthesise final answer
-          │
-4.        FastAPI returns:
-          { "response": "...", "graph": <plotly payload or null> }
-```
-
-### 3. Authentication
-
-```
-POST /v1/auth/login
-  · verifies username + bcrypt hash
-  · mints a JWT containing { sub, role, company_id, jti }
-    (jti = unique token ID, UUID)
-  · persists a TokenSession row (jti, user_id, expires_at)
-  · returns the token
-
-Every protected endpoint:
-  · FastAPI decodes the JWT (python-jose)
-  · looks up the TokenSession by jti
-  · rejects if: session missing / revoked_at set / logout_at set / expired
-
-POST /v1/auth/logout
-  · sets revoked_at + logout_at on the TokenSession row
-  · that jti is now permanently invalid — no replay possible
-```
-
----
-
-## Database schema
-
-```
-companies          users               token_sessions
-──────────         ──────              ──────────────
-id (PK)            id (PK)             id (PK)
-name (unique)      username (unique)   user_id → users.id
-industry           hashed_password     jti (unique)
-description        role (enum)         issued_at
-created_at         company_id → co.id  expires_at
-                   created_at          revoked_at
-                                       logout_at
-                                       ip_address
-                                       user_agent
-
-documents          document_chunks
-─────────          ───────────────
-id (PK)            id (PK)
-filename           document_id → documents.id
-status (enum)      text_content
-company_id → co.id embedding  Vector(384)
-created_at
-```
-
-**Cascade rules:**
-- Delete company → deletes its users, documents, and chunks
-- Delete user → deletes their token sessions
-- Delete document → deletes its chunks (pgvector rows)
-
-**Datetime format:** All timestamps are stored as `TIMESTAMPTZ` in PostgreSQL (UTC). API responses format them as `DD:MM:YYYY HH:MM:SS.mmm` — e.g. `31:05:2026 14:30:45.123`.
+Full setup guide: [docs/RUNBOOK.md](docs/RUNBOOK.md)
 
 ---
 
@@ -185,8 +57,6 @@ created_at
 | `DELETE` | `/v1/documents/{id}` | Admin (own company) |
 | `POST` | `/v1/chat/invoke` | Admin or Employee |
 
-Interactive docs available at `/docs` when the server is running.
-
 ---
 
 ## Tech stack
@@ -207,83 +77,6 @@ Interactive docs available at `/docs` when the server is running.
 | Cloud storage | `boto3` (AWS S3) |
 | Config | Pydantic Settings |
 | Dependency management | uv |
-
----
-
-## Key design decisions
-
-| Decision | Reason |
-|----------|--------|
-| **Celery + Redis** for PDF ingestion | Embedding a 100-page PDF takes 10–20 s. Running it in a FastAPI endpoint blocks the event loop and times out clients. Celery processes it in a separate worker process. |
-| **pgvector inside PostgreSQL** | Keeps the vector index in the same database as relational data. No separate vector DB to operate, backup, or sync. |
-| **REST over GraphQL** | The API is command-driven (upload file, invoke agent). GraphQL shines for flexible data queries; REST is cleaner for file uploads and fire-and-forget async workflows. |
-| **LangGraph over a plain LLM call** | Enables a reasoning loop — the LLM can call tools multiple times before answering, which is required for retrieval-augmented generation and chart generation in the same turn. |
-| **TokenSession in DB** | Stateless JWTs cannot be revoked. Storing the `jti` lets logout work properly and enables per-session auditing (`ip_address`, `user_agent`, `issued_at`). |
-| **Alembic for migrations** | Schema is version-controlled and reproducible. The app refuses to start if `alembic upgrade head` hasn't been run — no silent schema drift. |
-| **Pluggable storage backend** | `DOCUMENT_STORAGE=LOCAL` for development; `DOCUMENT_STORAGE=CLOUD_STORAGE` for production S3. The Celery worker, upload endpoint, and delete endpoint all go through the same `StorageBackend` interface — switching backends requires only an env var change. |
-| **Structured JSON logging** | Every log line is a JSON object with `ts`, `level`, `logger`, `request_id`, `msg`, and any extra context fields. A `request_id` correlation ID is injected per HTTP request (via middleware) and per Celery task (via task ID), so all log lines for a single operation can be traced across the API and worker. SQL query logging is suppressed unless `LOG_LEVEL=DEBUG`. |
-
----
-
-## Project structure
-
-```
-agentic-rag-api/
-├── app/
-│   ├── main.py                    # FastAPI app, lifespan startup check, router wiring
-│   ├── api/
-│   │   ├── dependencies.py        # Auth guards: get_current_user, require_admin, etc.
-│   │   └── v1/endpoints/
-│   │       ├── auth.py            # login, logout, me, me/sessions
-│   │       ├── companies.py       # company CRUD (super admin)
-│   │       ├── users.py           # user CRUD (company admin)
-│   │       ├── documents.py       # document upload/list/get/delete (company admin)
-│   │       └── chat.py            # agent chat invoke (admin + employee)
-│   ├── agent/
-│   │   ├── graph.py               # LangGraph StateGraph — agent + tool nodes
-│   │   └── tools/
-│   │       ├── vector_search.py   # pgvector cosine similarity search tool
-│   │       └── graph_generator.py # Plotly chart generation tool
-│   ├── core/
-│   │   ├── config.py              # Pydantic Settings (.env loader)
-│   │   ├── security.py            # JWT creation, bcrypt hashing
-│   │   ├── logger.py              # JSON structured logging, request-ID ContextVar, setup_logging()
-│   │   └── exceptions.py          # AppException hierarchy + global FastAPI exception handlers
-│   ├── storage/
-│   │   ├── __init__.py            # get_storage() factory — picks LOCAL or S3 backend
-│   │   ├── base.py                # abstract StorageBackend interface
-│   │   ├── local.py               # LocalStorage — uploads/{company_id}/{stem}_{DD-MM-YYYY_HH-MM-SS}.pdf
-│   │   └── s3.py                  # S3Storage — BACKEND/{company_id}/{stem}_{DD-MM-YYYY_HH-MM-SS}.pdf
-│   ├── db/
-│   │   ├── session.py             # async SQLAlchemy engine and session factory (FastAPI)
-│   │   └── models/
-│   │       ├── base.py            # declarative Base + ProcessingStatus enum
-│   │       ├── company.py         # Company model
-│   │       ├── user.py            # User model + UserRole enum
-│   │       ├── documents.py       # Document + DocumentChunk models
-│   │       └── token_session.py   # TokenSession model
-│   ├── schemas/                   # Pydantic request/response models
-│   │   ├── common.py              # FormattedDatetime type (DD:MM:YYYY HH:MM:SS.mmm)
-│   │   ├── auth.py
-│   │   ├── users.py
-│   │   ├── companies.py
-│   │   ├── documents.py
-│   │   ├── sessions.py
-│   │   └── chat.py
-│   └── worker/
-│       ├── celery_app.py          # Celery app config (Redis broker + backend)
-│       └── tasks.py               # process_pdf_task (chunk + embed)
-├── alembic/
-│   ├── env.py                     # async-aware Alembic env
-│   ├── script.py.mako             # migration file template
-│   └── versions/
-│       └── 0001_initial_schema.py # creates vector extension + all 5 tables
-├── tests/
-├── docker-compose.yml             # PostgreSQL (pgvector) + Redis
-├── pyproject.toml                 # uv dependencies
-├── uv.lock                        # pinned lockfile (129 packages)
-└── alembic.ini                    # Alembic config (URL injected from settings)
-```
 
 ---
 
@@ -317,7 +110,7 @@ ENCODING=utf-8
 
 # Document storage: LOCAL or CLOUD_STORAGE
 DOCUMENT_STORAGE=LOCAL
-LOCAL_UPLOAD_DIR=uploads   # only used when DOCUMENT_STORAGE=LOCAL
+LOCAL_UPLOAD_DIR=uploads
 
 # AWS S3 (only required when DOCUMENT_STORAGE=CLOUD_STORAGE)
 # AWS_ACCESS_KEY_ID=
@@ -326,79 +119,44 @@ LOCAL_UPLOAD_DIR=uploads   # only used when DOCUMENT_STORAGE=LOCAL
 # S3_BUCKET_NAME=agentic-rag-api
 ```
 
+Full variable reference: [docs/RUNBOOK.md#environment-variables-reference](docs/RUNBOOK.md#environment-variables-reference)
+
 ---
 
-## Getting started
+## Documentation
 
-### 1. Start infrastructure
+| Document | Contents |
+|----------|----------|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component diagram, request lifecycle, singleton model loading, storage backend design, RBAC model |
+| [docs/RUNBOOK.md](docs/RUNBOOK.md) | Full setup, service startup/shutdown, migrations, monitoring, common ops tasks, S3 setup, backup/restore |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Code standards, docstring style, singleton pattern, adding endpoints, migrations, logging conventions |
 
-```bash
-docker-compose up -d
-```
+---
 
-Starts PostgreSQL 16 with pgvector and Redis.
-
-### 2. Install dependencies
-
-```bash
-uv sync
-```
-
-### 3. Run database migrations
+## Development commands
 
 ```bash
-alembic upgrade head
-```
+# Linting and formatting
+ruff check app/        # lint
+ruff check app/ --fix  # auto-fix
+black app/             # format
+interrogate app/       # docstring coverage (min 80%)
 
-The app will refuse to start if this step is skipped.
+# Dependencies
+uv add <package>       # add a runtime dependency
+uv add --group dev <p> # add a dev-only dependency
+uv sync                # sync venv to lockfile
+uv sync --group dev    # include dev tools
 
-### 4. Start the API server
+# Database
+alembic upgrade head                          # apply all migrations
+alembic revision --autogenerate -m "desc"     # generate a migration
+alembic downgrade -1                          # roll back one step
 
-```bash
-uvicorn app.main:app --reload
-```
-
-### 5. Start the Celery worker (separate terminal)
-
-On macOS (Apple Silicon), set this first to prevent fork safety issues:
-
-```bash
-export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
-```
-
-Then:
-
-```bash
+# Celery worker (separate terminal)
+export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES  # macOS only
 celery -A app.worker.celery_app worker --pool=solo --loglevel=info
-```
 
-> Use `--pool=prefork` in production (Linux).
-
----
-
-## Development
-
-### Dependency management
-
-```bash
-uv add <package>       # add a dependency
-uv remove <package>    # remove a dependency
-uv sync                # install/update venv to match uv.lock
-```
-
-### Database migrations
-
-```bash
-# After changing a model
-alembic revision --autogenerate -m "description"
-alembic upgrade head
-
-# Roll back one step
-alembic downgrade -1
-```
-
-### Running tests
-
-```bash
+# Tests
 pytest
 ```
