@@ -1,6 +1,8 @@
 """LangGraph tool: generate Plotly chart payloads from structured JSON."""
 
+import ast
 import json
+import re
 from typing import Any
 
 from langchain_core.tools import tool
@@ -10,8 +12,59 @@ from app.core.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _parse_graph_input(data_json: Any) -> dict[str, Any]:
+    """Parse graph payload from strict JSON or common dict-like string variants."""
+    if isinstance(data_json, dict):
+        return data_json
+
+    if not isinstance(data_json, str):
+        raise ValueError("Graph input must be a JSON string or dictionary.")
+
+    content = data_json.strip()
+    if not content:
+        raise ValueError("Graph input is empty.")
+
+    # Some model outputs wrap JSON in markdown code fences.
+    if content.startswith("```"):
+        content = re.sub(r"^```(?:json)?\\s*", "", content)
+        content = re.sub(r"\\s*```$", "", content).strip()
+
+    try:
+        parsed = json.loads(content)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback for Python dict-style strings (single quotes / True / False / None).
+    try:
+        literal = ast.literal_eval(content)
+        if isinstance(literal, dict):
+            return literal
+    except (SyntaxError, ValueError):
+        pass
+
+    # Last attempt: extract the first object-like fragment and parse it.
+    match = re.search(r"\{.*\}", content, re.DOTALL)
+    if match:
+        fragment = match.group(0)
+        try:
+            parsed = json.loads(fragment)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            try:
+                literal = ast.literal_eval(fragment)
+                if isinstance(literal, dict):
+                    return literal
+            except (SyntaxError, ValueError):
+                pass
+
+    raise ValueError("Invalid graph payload format.")
+
+
 @tool
-def generate_graph(data_json: str) -> str:
+def generate_graph(data_json: Any) -> str:
     """
     Generate an interactive chart or graph in Plotly JSON format.
     Use this tool ONLY when the user explicitly asks for a chart, graph, plot, or visual breakdown.
@@ -30,13 +83,17 @@ def generate_graph(data_json: str) -> str:
         '{"title": "Q1 Revenue", "chart_type": "bar",
           "labels": ["Jan", "Feb", "Mar"], "values": [100, 150, 200]}'
     """
-    logger.info("Graph generation invoked", extra={"payload_length": len(data_json)})
+    payload_length = len(data_json) if isinstance(data_json, str) else None
+    logger.info("Graph generation invoked", extra={"payload_length": payload_length, "input_type": type(data_json).__name__})
 
     try:
-        data = json.loads(data_json)
-    except json.JSONDecodeError as exc:
+        data = _parse_graph_input(data_json)
+    except ValueError as exc:
         logger.warning("Graph generation failed — invalid JSON input", extra={"reason": str(exc)})
-        return json.dumps({"error": "Invalid JSON provided. Please provide a valid JSON string."})
+        return json.dumps({
+            "error": "Invalid graph payload. Provide a JSON object with title, chart_type, labels, and values/series.",
+            "do_not_retry": True,
+        })
 
     title = data.get("title", "Chart")
     chart_type = data.get("chart_type", "bar")
