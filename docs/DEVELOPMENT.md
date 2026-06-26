@@ -112,7 +112,7 @@ Run `ruff check app/ --fix` to auto-sort.
 
 - Use `X | Y` union syntax (Python 3.10+), not `Optional[X]` or `Union[X, Y]`.
 - Use `list[X]` and `dict[K, V]` (lowercase), not `List[X]` or `Dict[K, V]`.
-- Use `enum.StrEnum` for string enumerations, not `(str, enum.Enum)`.
+- Use `(str, enum.Enum)` for SQLAlchemy string enums in this project.
 
 ---
 

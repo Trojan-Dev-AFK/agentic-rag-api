@@ -5,6 +5,7 @@ Wires together routers, middleware, exception handlers, and the lifespan startup
 check that verifies all required database tables exist before accepting traffic.
 """
 
+import asyncio
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -79,6 +80,21 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.critical("Database connectivity check failed", exc_info=exc)
         raise
+
+    if settings.AGENT_WARMUP_ON_STARTUP:
+        try:
+            from app.agent.tools.vector_search import warmup_vector_search
+
+            warmed_now = await asyncio.to_thread(warmup_vector_search)
+            logger.info(
+                "Agent warmup completed",
+                extra={"embeddings_loaded_now": warmed_now},
+            )
+        except Exception as exc:
+            logger.warning(
+                "Agent warmup failed — continuing without warm cache",
+                exc_info=exc,
+            )
 
     yield
 

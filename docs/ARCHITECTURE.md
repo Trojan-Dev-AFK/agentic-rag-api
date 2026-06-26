@@ -111,6 +111,7 @@ Celery worker (separate process):
 ```
 POST /v1/chat/invoke { "query": "..." }
   → validate admin/employee role (super_admin blocked)
+  → apply recursion limit (8 steps) and per-request duplicate-search guard
   → app_graph.ainvoke({ messages: [HumanMessage] })
 
   LangGraph loop:
@@ -120,7 +121,8 @@ POST /v1/chat/invoke { "query": "..." }
 
     Tool node (if tool call):
       search_documents(query):
-        embed_query → cosine_distance SELECT TOP 5 document_chunks
+        same-query repetition capped (blocks after one repeat in a request)
+        embed_query → cosine_distance SELECT TOP 5 company-scoped document_chunks
       generate_graph(data_json):
         parse JSON → build Plotly figure spec
 
@@ -137,7 +139,7 @@ Expensive objects are initialised **once per process** and reused:
 
 | Object | Where | When loaded |
 |--------|-------|-------------|
-| `embeddings_model` (HuggingFace) | `vector_search.py` module level | FastAPI startup (first import) |
+| `_embeddings_model` (HuggingFace) | `vector_search.py` lazy singleton | First `search_documents` call |
 | `llm` (ChatOllama) | `graph.py` module level | FastAPI startup |
 | `app_graph` (compiled LangGraph) | `graph.py` module level | FastAPI startup |
 | `_embedding_model` (HuggingFace) | `tasks.py` lazy singleton | First Celery task execution |
@@ -147,6 +149,9 @@ Expensive objects are initialised **once per process** and reused:
 The Celery worker uses **lazy singletons** because `tasks.py` is imported by the FastAPI
 process (to call `.delay()`). Eager loading would waste ~400 MB of model weights in the
 API process, which never runs the embedding logic.
+
+To reduce first-request latency, the API performs a best-effort warmup at startup when
+`AGENT_WARMUP_ON_STARTUP=true` by preloading the vector-search embedding model.
 
 ---
 
@@ -175,7 +180,7 @@ See [README.md](../README.md) for the full schema table. Key design points:
 - `TIMESTAMPTZ` everywhere; UTC only.
 - pgvector `Vector(384)` column on `document_chunks` for cosine distance search.
 - Cascade deletes are enforced at the DB level: company → users → sessions, company → documents → chunks.
-- `users.company_id` is `SET NULL` on company delete (user record survives).
+- `users.company_id` uses `SET NULL` at the FK level, but company deletion in the API path removes child users via ORM cascade.
 
 ---
 

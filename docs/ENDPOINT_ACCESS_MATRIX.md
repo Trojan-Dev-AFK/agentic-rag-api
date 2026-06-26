@@ -11,7 +11,7 @@ Quick reference for all API endpoints and their access rules.
 | `/v1/auth/logout` | POST | ❌ | ✅ | ✅ | ✅ | Revokes current session |
 | `/v1/auth/me` | GET | ❌ | ✅ | ✅ | ✅ | Current user profile |
 | `/v1/auth/me/sessions` | GET | ❌ | ✅ | ✅ | ✅ | Own token sessions |
-| `/v1/auth/sessions/company` | GET | ❌ | ❌ | ✅* | ✅* | Company/all sessions; * requires matching company_id or query param |
+| `/v1/auth/sessions/company` | GET | ❌ | ❌ | ✅* | ✅ | Company sessions; * admin is always own-company scoped |
 | **Companies** |
 | `/v1/companies/` | POST | ❌ | ❌ | ❌ | ✅ | Create tenant |
 | `/v1/companies/` | GET | ❌ | ❌ | ❌ | ✅ | List all companies |
@@ -81,7 +81,7 @@ Scoped by company (admins see own company only; super_admin sees all).
 
 | Endpoint | Super Admin | Admin | Employee | Notes |
 |----------|-------------|-------|----------|-------|
-| `POST /v1/documents/upload` | ✅ any company (optional `?company_id=`) | ✅ own company only | ❌ | Files stored with company_id prefix |
+| `POST /v1/documents/upload` | ✅ any company (**requires** `?company_id=`) | ✅ own company only | ❌ | Files stored with company_id prefix |
 | `GET /v1/documents/` | ✅ all or filtered by `?company_id=` | ✅ own company only | ❌ | Query param ignored for admin |
 | `GET /v1/documents/{id}` | ✅ any document | ✅ own company only | ❌ | Returns 403 if cross-company |
 | `DELETE /v1/documents/{id}` | ✅ any document | ✅ own company only | ❌ | Cascades to chunks; removes storage file |

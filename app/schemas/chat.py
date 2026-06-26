@@ -36,3 +36,23 @@ class ChatResponse(BaseModel):
             }
         }
     )
+
+
+class WarmupResponse(BaseModel):
+    """Response returned by the agent warmup endpoint."""
+
+    message: str = Field(description="Human-readable warmup status message.")
+    embeddings_loaded_now: bool = Field(
+        description="`true` when this call loaded the embeddings model, `false` when already warm."
+    )
+    elapsed_seconds: float = Field(description="Warmup duration in seconds.")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "message": "Agent warmup completed",
+                "embeddings_loaded_now": False,
+                "elapsed_seconds": 0.021,
+            }
+        }
+    )

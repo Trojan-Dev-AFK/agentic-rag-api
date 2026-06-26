@@ -46,6 +46,8 @@ def call_model(state: GraphState):
             " Do NOT just describe data in text.\n"
             "- First use 'search_documents' to gather the numbers if needed,"
             " then call 'generate_graph' with the data.\n"
+            "- Never call 'search_documents' repeatedly with the same query in a loop."
+            " If you already called it and have results, produce a final answer.\n"
             "- After calling 'generate_graph', keep your final text response brief (e.g. 'Here is your chart.'). "
             "Do NOT re-list all the data points in your text answer — the chart already shows them."
         )

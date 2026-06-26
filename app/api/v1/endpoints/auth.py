@@ -3,17 +3,17 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_current_user, oauth2_scheme
+from app.api.dependencies import get_current_user, oauth2_scheme, require_admin_or_super_admin
 from app.core.config import settings
 from app.core.logger import get_logger
 from app.core.security import create_access_token, verify_password
-from app.db.models import TokenSession, User
+from app.db.models import TokenSession, User, UserRole
 from app.db.session import get_db
 from app.schemas.auth import LogoutResponse, MeResponse, TokenResponse
 from app.schemas.sessions import SessionResponse
@@ -155,5 +155,58 @@ async def list_my_sessions(
     logger.info(
         "Sessions listed",
         extra={"user_id": current_user.id, "session_count": len(sessions)},
+    )
+    return sessions
+
+
+@router.get("/sessions/company", response_model=list[SessionResponse])
+async def list_company_sessions(
+    company_id: str | None = Query(
+        default=None,
+        description="Filter by company UUID. Admin users are always restricted to their own company.",
+    ),
+    current_user: User = Depends(require_admin_or_super_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    List token sessions for a company.
+
+    **admin**: sees sessions for their own company only.
+    **super_admin**: can list all company sessions or filter by ``company_id``.
+    """
+    target_company_id = company_id
+    if current_user.role == UserRole.ADMIN:
+        if company_id and company_id != current_user.company_id:
+            logger.warning(
+                "Company sessions access denied",
+                extra={
+                    "user_id": current_user.id,
+                    "actor_company": current_user.company_id,
+                    "requested_company": company_id,
+                },
+            )
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        target_company_id = current_user.company_id
+
+    stmt = select(TokenSession).join(User, User.id == TokenSession.user_id)
+
+    if target_company_id:
+        stmt = stmt.where(User.company_id == target_company_id)
+    else:
+        # "All company sessions" intentionally excludes super_admin accounts (company_id is NULL).
+        stmt = stmt.where(User.company_id.is_not(None))
+
+    stmt = stmt.order_by(TokenSession.issued_at.desc())
+    result = await db.execute(stmt)
+    sessions = result.scalars().all()
+
+    logger.info(
+        "Company sessions listed",
+        extra={
+            "actor": current_user.id,
+            "actor_role": str(current_user.role),
+            "target_company_id": target_company_id or "all_companies",
+            "session_count": len(sessions),
+        },
     )
     return sessions

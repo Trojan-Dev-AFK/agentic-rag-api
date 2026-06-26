@@ -292,7 +292,9 @@ Delete a user account and cascade-delete all their token sessions.
 List all token sessions within a company.
 
 **Query Parameters:**
-- `company_id` (optional, string UUID) — **super_admin only**; filter by specified company
+- `company_id` (optional, string UUID)
+  - **admin**: may be omitted or equal to their own company; any other value returns `403`
+  - **super_admin**: optional filter; if omitted, returns sessions across all company users
 
 **Response (200 OK):**
 ```json
@@ -449,9 +451,9 @@ Delete a company. This cascades to all associated users (their `company_id` → 
 Upload a PDF for ingestion and vector embedding.
 
 **Query Parameters:**
-- `company_id` (optional, string UUID)
+- `company_id` (string UUID)
   - **admin**: ignored (always uploads to own company)
-  - **super_admin**: specify target company; if omitted, uploads to admin's company
+  - **super_admin**: required and must reference an existing company
 
 **Request:**
 ```
@@ -556,12 +558,35 @@ Also removes the source PDF from storage.
 
 ## Chat Endpoint (`/v1/chat`)
 
+### `POST /v1/chat/warmup`
+
+**Access:** Authenticated users (`super_admin`, `admin`, `employee`)
+
+Preload the vector-search embedding model so the next chat invocation avoids first-request cold-start latency.
+
+**Response (200 OK):**
+```json
+{
+  "message": "Agent warmup completed",
+  "embeddings_loaded_now": false,
+  "elapsed_seconds": 0.021
+}
+```
+
+**Notes:**
+- `embeddings_loaded_now=true` means this request performed the initial model load.
+- `embeddings_loaded_now=false` means the model was already warm.
+
 ### `POST /v1/chat/invoke`
 
 **Access:** `admin` and `employee` (company users only); `super_admin` blocked
 
 Invoke the agent with a natural language query. Returns a conversational response and 
 optionally a Plotly graph specification if the agent generated one.
+
+**Safeguards:**
+- LangGraph recursion limit is capped at `8` per request.
+- Repeated identical `search_documents` queries are blocked after one repeat to prevent loops.
 
 **Request:**
 ```json

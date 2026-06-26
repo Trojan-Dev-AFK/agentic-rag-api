@@ -1,5 +1,3 @@
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import require_admin_or_super_admin
 from app.core.exceptions import StorageError
 from app.core.logger import get_logger
-from app.db.models import Document, User, UserRole
+from app.db.models import Company, Document, User, UserRole
 from app.db.session import get_db
 from app.schemas.documents import DocumentResponse, UploadResponse
 from app.storage import get_storage
@@ -23,13 +21,13 @@ router = APIRouter()
     status_code=202,
     responses={
         400: {"description": "Company not found."},
-        403: {"description": "Forbidden — admin role required."},
+        403: {"description": "Forbidden — admin or super_admin role required."},
         500: {"description": "File could not be saved to storage."},
     },
 )
 async def upload_document(
     file: UploadFile,
-    company_id: Optional[str] = Query(
+    company_id: str | None = Query(
         default=None,
         description="Target company UUID. Required for super_admin; ignored for admin (always their own company).",
     ),
@@ -40,12 +38,20 @@ async def upload_document(
     Upload a PDF for processing (admin/super_admin only, company-scoped).
 
     **admin**: always uploads to their own company.
-    **super_admin**: can specify ``company_id`` to upload for any company; if omitted, uploads to a "platform" company.
+    **super_admin**: must provide ``company_id`` and can upload for any existing company.
     """
     if current_user.role == UserRole.ADMIN:
         target_company_id = current_user.company_id
     else:
-        target_company_id = company_id or current_user.company_id
+        if not company_id:
+            raise HTTPException(status_code=400, detail="company_id is required for super_admin uploads")
+
+        company_result = await db.execute(select(Company).filter(Company.id == company_id))
+        company = company_result.scalar_one_or_none()
+        if not company:
+            raise HTTPException(status_code=400, detail="Company not found")
+
+        target_company_id = company_id
 
     logger.info(
         "Document upload received",
@@ -97,7 +103,7 @@ async def upload_document(
 
 @router.get("/", response_model=list[DocumentResponse], status_code=200)
 async def list_documents(
-    company_id: Optional[str] = Query(
+    company_id: str | None = Query(
         default=None,
         description="Filter by company UUID. Ignored for admin (always their own company); optional for super_admin.",
     ),

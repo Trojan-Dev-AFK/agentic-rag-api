@@ -11,24 +11,29 @@ arguments.  It exits with a non-zero code if the username is already taken.
 
 import argparse
 import getpass
+import os
 import sys
 from pathlib import Path
 
 # Make sure the project root is on sys.path when the script is run directly.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker
-
-from app.core.config import settings
-from app.core.security import get_password_hash
-from app.db.models import User, UserRole
+# Ensure settings can always load .env regardless of current working directory.
+os.chdir(PROJECT_ROOT)
 
 
 def main() -> None:
     """
     Parse arguments, validate input, and insert the super_admin row.
     """
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import sessionmaker
+
+    from app.core.config import settings
+    from app.core.security import get_password_hash
+    from app.db.models import User, UserRole
+
     parser = argparse.ArgumentParser(description="Create a super_admin user.")
     parser.add_argument("--username", help="Login username for the super_admin account.")
     parser.add_argument("--password", help="Plain-text password (will be hashed).")

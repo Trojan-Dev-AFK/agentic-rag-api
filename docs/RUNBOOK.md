@@ -92,6 +92,13 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 Remove `--reload` in production. Interactive docs are at `http://localhost:8000/docs`.
 
+Optional: pre-warm the agent after startup to avoid first-chat embedding cold-start latency:
+
+```bash
+curl -X POST http://localhost:8000/v1/chat/warmup \
+  -H "Authorization: Bearer <token>"
+```
+
 ### Celery worker
 
 Open a separate terminal. On macOS (Apple Silicon) first run:
@@ -136,6 +143,7 @@ celery -A app.worker.celery_app control shutdown
 | `EMBEDDING_MODEL` | yes | — | HuggingFace model name |
 | `CHUNK_SIZE` | yes | — | Max chars per text chunk |
 | `CHUNK_OVERLAP` | yes | — | Overlap chars between adjacent chunks |
+| `AGENT_WARMUP_ON_STARTUP` | no | `true` | Best-effort preload of vector-search embedding model during API startup |
 | `ENCODING` | yes | — | Text encoding (use `utf-8`) |
 | `DOCUMENT_STORAGE` | no | `LOCAL` | `LOCAL` or `CLOUD_STORAGE` |
 | `LOCAL_UPLOAD_DIR` | no | `uploads` | Root dir for local file storage |
@@ -206,7 +214,15 @@ Every log line is a single JSON object:
 | `ERROR` + `PDF processing failed` | Corrupt PDF, disk full, or S3 auth issue |
 | `ERROR` + `S3 upload failed` | Wrong AWS credentials or bucket policy |
 | `ERROR` + `Vector search database query failed` | pgvector extension missing or DB unreachable |
+| `WARNING` + `Vector search blocked — duplicate query loop detected` | Agent attempted repeated identical vector searches; guard forced finalisation |
 | `WARNING` + `Attempt to use revoked token` | Normal post-logout token replay attempt |
+
+### Agent warmup and loop guard
+
+- The API performs a best-effort startup warmup when `AGENT_WARMUP_ON_STARTUP=true`.
+- You can trigger warmup manually via `POST /v1/chat/warmup`.
+- The chat graph uses a recursion limit of 8 to prevent long tool-call loops.
+- The vector-search tool blocks repeated identical searches in a single request after one repeat.
 
 ### Log level
 
@@ -221,15 +237,16 @@ Set `LOG_LEVEL=DEBUG` in `.env` to enable:
 
 ### Create the first super_admin
 
-There is no registration endpoint. Create the user directly:
+There is no registration endpoint. Use the bootstrap script:
 
-```python
-# Run in a Python shell with the venv activated:
-from app.core.security import get_password_hash
-from app.db.models import User, UserRole
-# (use a sync SQLAlchemy session connected to DATABASE_URL_SYNC)
-user = User(username="admin", hashed_password=get_password_hash("changeme"), role=UserRole.SUPER_ADMIN)
-session.add(user); session.commit()
+```bash
+uv run python scripts/create_superadmin.py --username superadmin --password <secure-password>
+```
+
+If running from the `scripts/` directory:
+
+```bash
+uv run python create_superadmin.py --username superadmin --password <secure-password>
 ```
 
 ### Rotate the SECRET_KEY
