@@ -45,5 +45,13 @@ jobs:
       - name: Thin endpoint lint (Checking endpoint-layer boundaries)
         run: uv run python scripts/lint_thin_endpoints.py
 
+      - name: Duplicate code (Checking meaningful copy-paste blocks)
+        run: >-
+          uvx --from pylint==3.3.8 pylint
+          --disable=all
+          --enable=duplicate-code
+          --ignore-patterns='chat.py,companies.py,documents.py,users.py,auth.py,sessions.py'
+          app tests
+
       - name: Pytest (Checking unit and integration tests)
         run: uv run pytest -q
