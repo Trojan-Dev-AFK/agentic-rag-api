@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.core.logger import get_logger
 from app.core.runtime_controls import rate_limit_exceeded, token_session_cache_delete
 from app.core.security import create_access_token, verify_password
-from app.db.models import TokenSession, User, UserRole
+from app.db.models import Company, TokenSession, User, UserRole
 from app.schemas.auth import LogoutResponse, MeResponse, TokenResponse
 
 logger = get_logger(__name__)
@@ -115,15 +115,20 @@ async def logout(*, token: str, current_user: User, db: AsyncSession) -> LogoutR
     return LogoutResponse(message="Successfully logged out")
 
 
-def get_current_user_profile(*, current_user: User) -> MeResponse:
+async def get_current_user_profile(*, current_user: User, db: AsyncSession) -> MeResponse:
     """Convert the authenticated ORM user into API profile response."""
     logger.info("Profile fetched", extra={"user_id": current_user.id, "username": current_user.username})
+    company_name = None
+    if current_user.company_id:
+        company_result = await db.execute(select(Company).filter(Company.id == current_user.company_id))
+        company = company_result.scalar_one_or_none()
+        company_name = company.name if company else None
     return MeResponse(
         id=current_user.id,
         username=current_user.username,
         role=current_user.role,
         company_id=current_user.company_id,
-        company_name=current_user.company.name if current_user.company else None,
+        company_name=company_name,
         created_at=current_user.created_at,
     )
 

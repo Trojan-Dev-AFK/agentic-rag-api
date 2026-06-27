@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import require_super_admin
+from app.api.v1.endpoints.common import build_list_service_kwargs
 from app.db.models import User
 from app.db.session import get_db
 from app.schemas.companies import CompanyCreate, CompanyResponse, CompanyUpdate
@@ -34,12 +35,14 @@ async def list_companies(
     current_user: User = Depends(require_super_admin),
 ):
     """Return all companies ordered by name (super admin only)."""
-    service_kwargs: dict = {"db": db, "current_user": current_user}
-    if limit is not None:
-        service_kwargs["limit"] = limit
-    if offset is not None:
-        service_kwargs["offset"] = offset
-    return await companies_service.list_companies(**service_kwargs)
+    return await companies_service.list_companies(
+        **build_list_service_kwargs(
+            db=db,
+            current_user=current_user,
+            limit=limit,
+            offset=offset,
+        )
+    )
 
 
 @router.get("/{company_id}", response_model=CompanyResponse)

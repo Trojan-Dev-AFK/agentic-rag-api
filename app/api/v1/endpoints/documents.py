@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import require_admin_or_super_admin
+from app.api.v1.endpoints.common import build_list_service_kwargs
 from app.db.models import User
 from app.db.session import get_db
 from app.schemas.documents import DocumentResponse, UploadResponse
@@ -60,16 +61,15 @@ async def list_documents(
     **admin**: always returns documents from their own company only.
     **super_admin**: returns documents for the specified ``company_id``; if omitted, returns all documents.
     """
-    service_kwargs: dict = {
-        "company_id": company_id,
-        "db": db,
-        "current_user": current_user,
-    }
-    if limit is not None:
-        service_kwargs["limit"] = limit
-    if offset is not None:
-        service_kwargs["offset"] = offset
-    return await documents_service.list_documents(**service_kwargs)
+    return await documents_service.list_documents(
+        **build_list_service_kwargs(
+            db=db,
+            current_user=current_user,
+            limit=limit,
+            offset=offset,
+            company_id=company_id,
+        )
+    )
 
 
 @router.get("/{document_id}", response_model=DocumentResponse, status_code=200)

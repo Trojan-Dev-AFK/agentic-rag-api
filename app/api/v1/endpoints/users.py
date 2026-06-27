@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import require_admin_or_super_admin
+from app.api.v1.endpoints.common import build_list_service_kwargs
 from app.db.models import User
 from app.db.session import get_db
 from app.schemas.users import UserCreate, UserResponse, UserUpdate
@@ -71,16 +72,15 @@ async def list_users(
     **super_admin**: returns users for the specified ``company_id``; if omitted, returns all users
     across every company (excluding other ``super_admin`` accounts).
     """
-    service_kwargs: dict = {
-        "company_id": company_id,
-        "db": db,
-        "current_user": current_user,
-    }
-    if limit is not None:
-        service_kwargs["limit"] = limit
-    if offset is not None:
-        service_kwargs["offset"] = offset
-    return await users_service.list_users(**service_kwargs)
+    return await users_service.list_users(
+        **build_list_service_kwargs(
+            db=db,
+            current_user=current_user,
+            limit=limit,
+            offset=offset,
+            company_id=company_id,
+        )
+    )
 
 
 @router.get("/{user_id}", response_model=UserResponse)

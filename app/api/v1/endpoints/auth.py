@@ -51,9 +51,12 @@ async def logout(
 
 
 @router.get("/me", response_model=MeResponse)
-async def get_current_user_profile(current_user: User = Depends(get_current_user)):
+async def get_current_user_profile(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """Get the current user's profile."""
-    return auth_service.get_current_user_profile(current_user=current_user)
+    return await auth_service.get_current_user_profile(current_user=current_user, db=db)
 
 
 @router.get("/me/sessions", response_model=list[SessionResponse])

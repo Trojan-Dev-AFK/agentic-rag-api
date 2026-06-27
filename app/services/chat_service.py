@@ -30,16 +30,9 @@ from app.core.runtime_controls import (
 )
 from app.db.models import ChatConversation, ChatMessage, User
 from app.schemas.chat import ChatConversationResponse, ChatMessageResponse
+from app.services.common import sanitize_pagination
 
 logger = get_logger(__name__)
-
-
-def _sanitize_pagination(*, limit: int | None, offset: int | None) -> tuple[int, int]:
-    safe_limit = settings.DEFAULT_LIST_LIMIT if limit is None else limit
-    safe_limit = max(1, min(safe_limit, settings.MAX_LIST_LIMIT))
-    safe_offset = 0 if offset is None else max(0, offset)
-    return safe_limit, safe_offset
-
 
 def _conversation_list_cache_key(*, user_id: str, company_id: str) -> str:
     return f"cache:chat:conversations:{company_id}:{user_id}"
@@ -270,7 +263,7 @@ async def list_conversations(
             detail="You do not have permission to perform this action.",
         )
 
-    safe_limit, safe_offset = _sanitize_pagination(limit=limit, offset=offset)
+    safe_limit, safe_offset = sanitize_pagination(limit=limit, offset=offset)
     cache_key = f"{_conversation_list_cache_key(user_id=current_user.id, company_id=current_user.company_id)}:{safe_limit}:{safe_offset}"
     cached = await cache_get_json(key=cache_key)
     if isinstance(cached, list):
@@ -314,7 +307,7 @@ async def get_conversation_messages(
     """Return persisted messages for one user-scoped conversation."""
     conversation = await _get_scoped_conversation(conversation_id=conversation_id, current_user=current_user, db=db)
 
-    safe_limit, safe_offset = _sanitize_pagination(limit=limit, offset=offset)
+    safe_limit, safe_offset = sanitize_pagination(limit=limit, offset=offset)
     cache_key = f"{_conversation_messages_cache_key(conversation_id=conversation.id)}:{safe_limit}:{safe_offset}"
     cached = await cache_get_json(key=cache_key)
     if isinstance(cached, list):

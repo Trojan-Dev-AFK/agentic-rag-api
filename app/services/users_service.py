@@ -4,23 +4,15 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.logger import get_logger
 from app.core.security import get_password_hash
 from app.db.models import Company, User, UserRole
 from app.schemas.users import UserCreate, UserResponse, UserUpdate
+from app.services.common import get_by_id_or_404, get_company_or_400, sanitize_pagination
 
 logger = get_logger(__name__)
 
 _SUPER_ADMIN_ROLE_ERROR = "The super_admin role cannot be assigned via this endpoint. Use the bootstrap script."
-
-
-def _sanitize_pagination(*, limit: int | None, offset: int | None) -> tuple[int, int]:
-    safe_limit = settings.DEFAULT_LIST_LIMIT if limit is None else limit
-    safe_limit = max(1, min(safe_limit, settings.MAX_LIST_LIMIT))
-    safe_offset = 0 if offset is None else max(0, offset)
-    return safe_limit, safe_offset
-
 
 def _assert_same_company(current_user: User, target_company_id: str | None) -> None:
     """Raise 403 when company-scoped admin attempts cross-company user operation."""
@@ -46,7 +38,28 @@ def _to_user_response(user: User) -> UserResponse:
         username=user.username,
         role=user.role,
         company_id=user.company_id,
-        company_name=user.company.name if user.company else None,
+        company_name=None,
+        created_at=user.created_at,
+    )
+
+
+async def _company_name_map(*, db: AsyncSession, company_ids: set[str]) -> dict[str, str]:
+    """Return a mapping of company_id -> company_name for known IDs."""
+    if not company_ids:
+        return {}
+    result = await db.execute(select(Company).filter(Company.id.in_(company_ids)))
+    companies = result.scalars().all()
+    return {company.id: company.name for company in companies}
+
+
+def _to_user_response_with_company_name(*, user: User, company_name: str | None) -> UserResponse:
+    """Map user entity and explicit company name to API response payload."""
+    return UserResponse(
+        id=user.id,
+        username=user.username,
+        role=user.role,
+        company_id=user.company_id,
+        company_name=company_name,
         created_at=user.created_at,
     )
 
@@ -71,14 +84,7 @@ async def create_user(*, user_data: UserCreate, db: AsyncSession, current_user: 
         )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already registered")
 
-    company_result = await db.execute(select(Company).filter(Company.id == user_data.company_id))
-    company = company_result.scalar_one_or_none()
-    if not company:
-        logger.warning(
-            "User creation failed — company not found",
-            extra={"company_id": user_data.company_id, "actor": current_user.id},
-        )
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Company not found")
+    company = await get_company_or_400(db=db, company_id=user_data.company_id, actor_id=current_user.id)
 
     new_user = User(
         username=user_data.username,
@@ -101,7 +107,7 @@ async def create_user(*, user_data: UserCreate, db: AsyncSession, current_user: 
             "actor_role": str(current_user.role),
         },
     )
-    return _to_user_response(new_user)
+    return _to_user_response_with_company_name(user=new_user, company_name=company.name)
 
 
 async def list_users(
@@ -113,7 +119,7 @@ async def list_users(
     current_user: User,
 ) -> list[UserResponse]:
     """List users based on actor role and optional company filter."""
-    safe_limit, safe_offset = _sanitize_pagination(limit=limit, offset=offset)
+    safe_limit, safe_offset = sanitize_pagination(limit=limit, offset=offset)
     if current_user.role == UserRole.ADMIN:
         query = (
             select(User)
@@ -141,16 +147,26 @@ async def list_users(
             "filter_company": company_id or (current_user.company_id if current_user.role == UserRole.ADMIN else "all"),
         },
     )
-    return [_to_user_response(user) for user in users]
+    company_map = await _company_name_map(
+        db=db,
+        company_ids={user.company_id for user in users if user.company_id is not None},
+    )
+    return [
+        _to_user_response_with_company_name(user=user, company_name=company_map.get(user.company_id or ""))
+        for user in users
+    ]
 
 
 async def get_user(*, user_id: str, db: AsyncSession, current_user: User) -> UserResponse:
     """Fetch a user by UUID with role-aware company scope checks."""
-    result = await db.execute(select(User).filter(User.id == user_id))
-    user = result.scalar_one_or_none()
-    if not user:
-        logger.warning("User not found", extra={"user_id": user_id, "actor": current_user.id})
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    user = await get_by_id_or_404(
+        db=db,
+        model=User,
+        entity_id=user_id,
+        detail="User not found",
+        log_message="User not found",
+        log_extra={"user_id": user_id, "actor": current_user.id},
+    )
 
     if current_user.role == UserRole.ADMIN:
         _assert_same_company(current_user, user.company_id)
@@ -159,16 +175,24 @@ async def get_user(*, user_id: str, db: AsyncSession, current_user: User) -> Use
         "User fetched",
         extra={"user_id": user_id, "actor": current_user.id, "actor_role": str(current_user.role)},
     )
-    return _to_user_response(user)
+    company_name = None
+    if user.company_id:
+        company_result = await db.execute(select(Company).filter(Company.id == user.company_id))
+        company = company_result.scalar_one_or_none()
+        company_name = company.name if company else None
+    return _to_user_response_with_company_name(user=user, company_name=company_name)
 
 
 async def update_user(*, user_id: str, update_data: UserUpdate, db: AsyncSession, current_user: User) -> UserResponse:
     """Update mutable fields on a user while enforcing RBAC and integrity checks."""
-    result = await db.execute(select(User).filter(User.id == user_id))
-    user = result.scalar_one_or_none()
-    if not user:
-        logger.warning("User update failed — not found", extra={"user_id": user_id, "actor": current_user.id})
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    user = await get_by_id_or_404(
+        db=db,
+        model=User,
+        entity_id=user_id,
+        detail="User not found",
+        log_message="User update failed — not found",
+        log_extra={"user_id": user_id, "actor": current_user.id},
+    )
 
     if current_user.role == UserRole.ADMIN:
         _assert_same_company(current_user, user.company_id)
@@ -190,14 +214,7 @@ async def update_user(*, user_id: str, update_data: UserUpdate, db: AsyncSession
         user.role = update_data.role
         changed.append("role")
     if update_data.company_id is not None:
-        company_result = await db.execute(select(Company).filter(Company.id == update_data.company_id))
-        company = company_result.scalar_one_or_none()
-        if not company:
-            logger.warning(
-                "User update failed — target company not found",
-                extra={"company_id": update_data.company_id, "actor": current_user.id},
-            )
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Company not found")
+        await get_company_or_400(db=db, company_id=update_data.company_id, actor_id=current_user.id)
         user.company_id = update_data.company_id
         changed.append("company_id")
 
@@ -213,16 +230,24 @@ async def update_user(*, user_id: str, update_data: UserUpdate, db: AsyncSession
             "actor_role": str(current_user.role),
         },
     )
-    return _to_user_response(user)
+    company_name = None
+    if user.company_id:
+        company_result = await db.execute(select(Company).filter(Company.id == user.company_id))
+        company = company_result.scalar_one_or_none()
+        company_name = company.name if company else None
+    return _to_user_response_with_company_name(user=user, company_name=company_name)
 
 
 async def delete_user(*, user_id: str, db: AsyncSession, current_user: User) -> None:
     """Delete a user and cascaded token sessions with scope and self-delete protections."""
-    result = await db.execute(select(User).filter(User.id == user_id))
-    user = result.scalar_one_or_none()
-    if not user:
-        logger.warning("User delete failed — not found", extra={"user_id": user_id, "actor": current_user.id})
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    user = await get_by_id_or_404(
+        db=db,
+        model=User,
+        entity_id=user_id,
+        detail="User not found",
+        log_message="User delete failed — not found",
+        log_extra={"user_id": user_id, "actor": current_user.id},
+    )
 
     if user.id == current_user.id:
         logger.warning("Self-deletion attempt blocked", extra={"user_id": user_id, "actor": current_user.id})

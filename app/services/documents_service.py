@@ -8,19 +8,12 @@ from app.core.config import settings
 from app.core.exceptions import StorageError
 from app.core.logger import get_logger
 from app.core.runtime_controls import cache_delete_prefix, cache_get_json, cache_set_json
-from app.db.models import Company, Document, User, UserRole
+from app.db.models import Document, User, UserRole
 from app.schemas.documents import DocumentResponse, UploadResponse
+from app.services.common import get_by_id_or_404, get_company_or_400, sanitize_pagination
 from app.storage import get_storage
 
 logger = get_logger(__name__)
-
-
-def _sanitize_pagination(*, limit: int | None, offset: int | None) -> tuple[int, int]:
-    safe_limit = settings.DEFAULT_LIST_LIMIT if limit is None else limit
-    safe_limit = max(1, min(safe_limit, settings.MAX_LIST_LIMIT))
-    safe_offset = 0 if offset is None else max(0, offset)
-    return safe_limit, safe_offset
-
 
 def _list_cache_key(*, current_user: User, company_id: str | None) -> str:
     if current_user.role == UserRole.ADMIN:
@@ -97,10 +90,7 @@ async def upload_document(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="company_id is required for super_admin uploads"
             )
 
-        company_result = await db.execute(select(Company).filter(Company.id == company_id))
-        company = company_result.scalar_one_or_none()
-        if not company:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Company not found")
+        await get_company_or_400(db=db, company_id=company_id, actor_id=current_user.id)
 
         target_company_id = company_id
 
@@ -169,7 +159,7 @@ async def list_documents(
     current_user: User,
 ) -> list[DocumentResponse]:
     """List documents with company scoping based on actor role."""
-    safe_limit, safe_offset = _sanitize_pagination(limit=limit, offset=offset)
+    safe_limit, safe_offset = sanitize_pagination(limit=limit, offset=offset)
     cache_key = f"{_list_cache_key(current_user=current_user, company_id=company_id)}:{safe_limit}:{safe_offset}"
     cached = await cache_get_json(key=cache_key)
     if isinstance(cached, list):
@@ -227,12 +217,14 @@ async def get_document(*, document_id: str, db: AsyncSession, current_user: User
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
             return DocumentResponse(**cached_response)
 
-    result = await db.execute(select(Document).filter(Document.id == document_id))
-    doc = result.scalar_one_or_none()
-
-    if not doc:
-        logger.warning("Document not found", extra={"doc_id": document_id, "actor": current_user.id})
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    doc = await get_by_id_or_404(
+        db=db,
+        model=Document,
+        entity_id=document_id,
+        detail="Document not found",
+        log_message="Document not found",
+        log_extra={"doc_id": document_id, "actor": current_user.id},
+    )
 
     if current_user.role == UserRole.ADMIN and doc.company_id != current_user.company_id:
         logger.warning(
@@ -258,12 +250,14 @@ async def get_document(*, document_id: str, db: AsyncSession, current_user: User
 
 async def delete_document(*, document_id: str, db: AsyncSession, current_user: User) -> None:
     """Delete a document, associated chunks, and best-effort storage object."""
-    result = await db.execute(select(Document).filter(Document.id == document_id))
-    doc = result.scalar_one_or_none()
-
-    if not doc:
-        logger.warning("Document delete failed — not found", extra={"doc_id": document_id, "actor": current_user.id})
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    doc = await get_by_id_or_404(
+        db=db,
+        model=Document,
+        entity_id=document_id,
+        detail="Document not found",
+        log_message="Document delete failed — not found",
+        log_extra={"doc_id": document_id, "actor": current_user.id},
+    )
 
     if current_user.role == UserRole.ADMIN and doc.company_id != current_user.company_id:
         logger.warning(

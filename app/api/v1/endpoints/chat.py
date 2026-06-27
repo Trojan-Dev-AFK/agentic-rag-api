@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Header, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import require_company_user
+from app.api.v1.endpoints.common import build_list_service_kwargs
 from app.db.models import User
 from app.db.session import get_db
 from app.schemas.chat import ChatConversationResponse, ChatMessageResponse, ChatRequest, ChatResponse
@@ -54,12 +55,14 @@ async def list_conversations(
     current_user: User = Depends(require_company_user),
 ):
     """List persisted chat conversations for the current authenticated user."""
-    service_kwargs: dict = {"db": db, "current_user": current_user}
-    if limit is not None:
-        service_kwargs["limit"] = limit
-    if offset is not None:
-        service_kwargs["offset"] = offset
-    return await chat_service.list_conversations(**service_kwargs)
+    return await chat_service.list_conversations(
+        **build_list_service_kwargs(
+            db=db,
+            current_user=current_user,
+            limit=limit,
+            offset=offset,
+        )
+    )
 
 
 @router.get("/conversations/{conversation_id}/messages", response_model=list[ChatMessageResponse])
@@ -71,15 +74,12 @@ async def get_conversation_messages(
     current_user: User = Depends(require_company_user),
 ):
     """Get persisted messages for one conversation owned by the current user."""
-    service_kwargs: dict = {
-        "conversation_id": conversation_id,
-        "db": db,
-        "current_user": current_user,
-    }
-    if limit is not None:
-        service_kwargs["limit"] = limit
-    if offset is not None:
-        service_kwargs["offset"] = offset
     return await chat_service.get_conversation_messages(
-        **service_kwargs,
+        **build_list_service_kwargs(
+            db=db,
+            current_user=current_user,
+            limit=limit,
+            offset=offset,
+            conversation_id=conversation_id,
+        ),
     )
