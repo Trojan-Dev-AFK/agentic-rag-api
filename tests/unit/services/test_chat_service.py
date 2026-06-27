@@ -22,6 +22,7 @@ def test_invoke_agent_blocks_user_without_company():
                 current_user=user,
                 db=None,
                 conversation_id=None,
+                idempotency_key=None,
             )
         )
 
@@ -40,6 +41,10 @@ def test_invoke_agent_wraps_recursion_error(monkeypatch):
         ]
     )
 
+    monkeypatch.setattr(chat_service, "rate_limit_exceeded", _async_return(False))
+    monkeypatch.setattr(chat_service, "idempotency_get", _async_return(None))
+    monkeypatch.setattr(chat_service, "idempotency_set", _async_noop)
+
     async def _raise(*args, **kwargs):
         from langgraph.errors import GraphRecursionError
 
@@ -54,6 +59,7 @@ def test_invoke_agent_wraps_recursion_error(monkeypatch):
                 current_user=user,
                 db=mock_db,
                 conversation_id=None,
+                idempotency_key=None,
             )
         )
 
@@ -70,6 +76,10 @@ def test_invoke_agent_returns_string_message(monkeypatch):
         ]
     )
 
+    monkeypatch.setattr(chat_service, "rate_limit_exceeded", _async_return(False))
+    monkeypatch.setattr(chat_service, "idempotency_get", _async_return(None))
+    monkeypatch.setattr(chat_service, "idempotency_set", _async_noop)
+
     async def _ok(*args, **kwargs):
         return {"messages": [type("M", (), {"content": 123})()]}
 
@@ -81,6 +91,7 @@ def test_invoke_agent_returns_string_message(monkeypatch):
             current_user=user,
             db=mock_db,
             conversation_id=None,
+            idempotency_key=None,
         )
     )
     assert response == "123"
@@ -143,6 +154,13 @@ def test_get_conversation_messages_returns_rows(mock_db):
 
 async def _async_noop(*_args, **_kwargs):
     return None
+
+
+def _async_return(value):
+    async def _run(*_args, **_kwargs):
+        return value
+
+    return _run
 
 
 def _async_execute(results):

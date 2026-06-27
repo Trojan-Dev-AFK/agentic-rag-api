@@ -20,7 +20,13 @@ from app.core.config import settings
 
 _echo_sql = os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG"
 
-engine = create_async_engine(settings.DATABASE_URL_ASYNC, echo=_echo_sql)
+engine = create_async_engine(
+    settings.DATABASE_URL_ASYNC,
+    echo=_echo_sql,
+    pool_pre_ping=True,
+    pool_size=settings.DB_POOL_SIZE,
+    max_overflow=settings.DB_MAX_OVERFLOW,
+)
 
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,

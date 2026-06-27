@@ -24,11 +24,56 @@ class Settings(BaseSettings):
     DATABASE_URL_SYNC: str
     """psycopg2 connection URL used by the Celery sync engine (e.g. ``postgresql://...``)."""
 
+    DB_POOL_SIZE: int = 10
+    """Async SQLAlchemy pool size for API DB connections."""
+
+    DB_MAX_OVERFLOW: int = 20
+    """Additional overflow connections allowed beyond ``DB_POOL_SIZE``."""
+
     # ------------------------------------------------------------------
     # Redis / Celery
     # ------------------------------------------------------------------
     REDIS_URL: str
     """Redis connection URL used as both Celery broker and result backend."""
+
+    LOGIN_RATE_LIMIT_ATTEMPTS: int = 10
+    """Maximum login attempts per key (IP+username) within LOGIN_RATE_LIMIT_WINDOW_SECONDS."""
+
+    LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 60
+    """Login rate limit window in seconds."""
+
+    CHAT_RATE_LIMIT_REQUESTS: int = 30
+    """Maximum chat invoke requests per user within CHAT_RATE_LIMIT_WINDOW_SECONDS."""
+
+    CHAT_RATE_LIMIT_WINDOW_SECONDS: int = 60
+    """Chat rate limit window in seconds."""
+
+    CHAT_IDEMPOTENCY_TTL_SECONDS: int = 300
+    """How long chat idempotency responses are cached in Redis."""
+
+    TOKEN_SESSION_CACHE_TTL_SECONDS: int = 60
+    """TTL for valid JWT session-cache entries to reduce repeated DB lookups."""
+
+    VECTOR_SEARCH_CACHE_TTL_SECONDS: int = 300
+    """TTL for vector-search context cache entries keyed by company and query."""
+
+    CHAT_HISTORY_CACHE_TTL_SECONDS: int = 60
+    """TTL for chat history read caches (conversation list/messages)."""
+
+    DOCUMENT_METADATA_CACHE_TTL_SECONDS: int = 60
+    """TTL for document list/get response caches."""
+
+    DEFAULT_LIST_LIMIT: int = 50
+    """Default page size for list endpoints."""
+
+    MAX_LIST_LIMIT: int = 200
+    """Hard upper bound for list endpoint page size."""
+
+    MAX_UPLOAD_BYTES: int = 25 * 1024 * 1024
+    """Maximum accepted upload size in bytes for document ingestion."""
+
+    READINESS_REQUIRE_REDIS: bool = True
+    """When true, /readyz requires Redis connectivity in addition to database readiness."""
 
     # ------------------------------------------------------------------
     # Security

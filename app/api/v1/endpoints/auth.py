@@ -17,7 +17,10 @@ router = APIRouter()
 @router.post(
     "/login",
     response_model=TokenResponse,
-    responses={401: {"description": "Invalid username or password."}},
+    responses={
+        401: {"description": "Invalid username or password."},
+        429: {"description": "Too many login attempts."},
+    },
 )
 async def login_for_access_token(
     request: Request,

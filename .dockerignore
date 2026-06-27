@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+.pytest_cache
+.ruff_cache
+.vscode
+.idea
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+.env.*
+uploads
+tests
+.claude

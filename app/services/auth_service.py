@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logger import get_logger
+from app.core.runtime_controls import rate_limit_exceeded, token_session_cache_delete
 from app.core.security import create_access_token, verify_password
 from app.db.models import TokenSession, User, UserRole
 from app.schemas.auth import LogoutResponse, MeResponse, TokenResponse
@@ -21,6 +22,15 @@ async def login_for_access_token(*, request: Request, username: str, password: s
     """Authenticate user credentials and create a JWT plus persistent token session."""
     client_ip = request.client.host if request.client else "unknown"
     logger.info("Login attempt", extra={"username": username, "ip": client_ip})
+
+    login_limit_key = f"rl:login:{client_ip}:{username.strip().lower()}"
+    if await rate_limit_exceeded(
+        key=login_limit_key,
+        limit=settings.LOGIN_RATE_LIMIT_ATTEMPTS,
+        window_seconds=settings.LOGIN_RATE_LIMIT_WINDOW_SECONDS,
+    ):
+        logger.warning("Login throttled by rate limiter", extra={"username": username, "ip": client_ip})
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many login attempts")
 
     result = await db.execute(select(User).filter(User.username == username))
     user = result.scalar_one_or_none()
@@ -99,6 +109,7 @@ async def logout(*, token: str, current_user: User, db: AsyncSession) -> LogoutR
     token_session.revoked_at = now
     token_session.logout_at = now
     await db.commit()
+    await token_session_cache_delete(jti=jti)
 
     logger.info("User logged out", extra={"user_id": current_user.id, "jti": jti})
     return LogoutResponse(message="Successfully logged out")

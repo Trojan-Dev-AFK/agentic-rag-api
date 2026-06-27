@@ -1,6 +1,7 @@
 """LangGraph tool: semantic search over document chunks using pgvector cosine distance."""
 
 from contextvars import ContextVar, Token
+from hashlib import sha256
 
 from langchain_core.tools import tool
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -9,6 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.logger import get_logger
+from app.core.runtime_controls import cache_get_text, cache_set_text
 from app.db.models import ChunkType, Document, DocumentChunk
 from app.db.session import AsyncSessionLocal
 
@@ -94,6 +96,13 @@ async def search_documents(query: str) -> str:
         )
     query_counts[normalized_query] = repeat_count + 1
 
+    query_hash = sha256(normalized_query.encode("utf-8")).hexdigest()
+    cache_key = f"cache:vector:{company_id}:{query_hash}"
+    cached_context = await cache_get_text(key=cache_key)
+    if cached_context:
+        logger.info("Vector search cache hit", extra={"company_id": company_id})
+        return cached_context
+
     try:
         query_vector = _get_embeddings_model().embed_query(query)
     except Exception as exc:
@@ -128,4 +137,10 @@ async def search_documents(query: str) -> str:
         )
         for text, chunk_type in chunks
     ]
-    return "\n\n---\n\n".join(formatted_chunks)
+    response_context = "\n\n---\n\n".join(formatted_chunks)
+    await cache_set_text(
+        key=cache_key,
+        value=response_context,
+        ttl_seconds=settings.VECTOR_SEARCH_CACHE_TTL_SECONDS,
+    )
+    return response_context

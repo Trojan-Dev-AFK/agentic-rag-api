@@ -35,7 +35,7 @@ Three separate processes handle different concerns:
 │                               └─ /v1/chat      (admin + employee)    │
 │                                                                      │
 │  Dependencies (app/api/dependencies.py)                              │
-│  └─ JWT decode → TokenSession lookup → role guard                    │
+│  └─ JWT decode → token-session cache/DB check → role guard           │
 │                                                                      │
 │  Services (app/services/)                                             │
 │  └─ auth · companies · users · documents · chat business logic       │
@@ -53,7 +53,8 @@ Three separate processes handle different concerns:
              ▼                                  ▼
 ┌────────────────────┐         ┌────────────────────────────────────────┐
 │  Redis             │         │  PostgreSQL 16 + pgvector              │
-│  (broker+backend)  │         │                                        │
+│  (broker+backend+  │         │                                        │
+│   runtime cache)   │         │                                        │
 └────────────┬───────┘         │  companies / users / token_sessions   │
              │                 │  documents / document_chunks (384-dim)│
              │                 │  chat_conversations / chat_messages    │
@@ -81,14 +82,18 @@ Every protected endpoint goes through `app/api/dependencies.py`:
 ```
 Client sends JWT
   → jose.jwt.decode (signature + expiry)
-  → SELECT TokenSession WHERE jti = ?
-     → reject if: row missing | revoked_at set | logout_at set | expired
   → SELECT User WHERE username = sub
+  → Redis token-session cache lookup by jti (short TTL)
+     → cache hit: continue
+     → cache miss: SELECT TokenSession WHERE jti = ?
+     → reject if: row missing | revoked_at set | logout_at set | expired
+  → cache valid jti -> user_id mapping for short TTL
   → role guard (require_admin / require_super_admin / require_company_user)
   → return User object to endpoint
 ```
 
-Token sessions are stored in PostgreSQL so logout is hard (no replay after revoke).
+Token sessions remain PostgreSQL-backed for hard logout/revocation semantics.
+Redis caching reduces repeated token-session reads, and logout explicitly invalidates cached jti entries.
 
 ### 2. Document ingestion
 
@@ -133,19 +138,27 @@ POST /v1/chat/invoke { "query": "...", "conversation_id": optional }
       search_documents(query):
         same-query repetition capped (blocks after one repeat in a request)
         embed_query → cosine_distance SELECT TOP 5 company-scoped document_chunks
+        optional Redis cache hit by company + normalized-query hash
 
     → loop back to Agent node until no more tool calls
 
   → persist one Q/A turn row in chat_messages (user_query + assistant_response)
+  → invalidate conversation list/messages caches for affected user/conversation
   → update chat_conversations.updated_at
   → return { response: "...", conversation_id: "..." }
 
 GET /v1/chat/conversations
+  → optional Redis read cache (short TTL)
   → list conversations for current user ordered by updated_at desc
 
 GET /v1/chat/conversations/{conversation_id}/messages
   → verify conversation ownership (user + company)
+  → optional Redis read cache (short TTL)
   → return ordered message history
+
+GET /v1/documents and GET /v1/documents/{id}
+  → optional Redis metadata cache (short TTL)
+  → invalidate on upload, delete, and worker status transitions
 ```
 
 ---

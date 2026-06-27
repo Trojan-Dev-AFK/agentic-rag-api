@@ -18,6 +18,7 @@ def test_login_for_access_token_success(mock_db, monkeypatch):
 
     monkeypatch.setattr(auth_service, "verify_password", lambda plain, hashed: True)
     monkeypatch.setattr(auth_service, "create_access_token", lambda data, expires_delta: "token-123")
+    monkeypatch.setattr(auth_service, "rate_limit_exceeded", _async_return(False))
 
     request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"), headers={"user-agent": "pytest"})
 
@@ -35,6 +36,23 @@ def test_login_for_access_token_success(mock_db, monkeypatch):
     assert mock_db.add.call_count == 1
     assert isinstance(mock_db.add.call_args.args[0], TokenSession)
     assert mock_db.commit.await_count == 1
+
+
+def test_login_for_access_token_throttled_raises_429(mock_db, monkeypatch):
+    monkeypatch.setattr(auth_service, "rate_limit_exceeded", _async_return(True))
+    request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"), headers={"user-agent": "pytest"})
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            auth_service.login_for_access_token(
+                request=request,
+                username="alice",
+                password="pw",
+                db=mock_db,
+            )
+        )
+
+    assert exc_info.value.status_code == 429
 
 
 def test_logout_unknown_session_raises_401(mock_db, monkeypatch):
@@ -78,3 +96,10 @@ def test_list_my_sessions_returns_list(mock_db):
 
     assert len(sessions) == 1
     assert sessions[0].jti == "j1"
+
+
+def _async_return(value):
+    async def _run(*_args, **_kwargs):
+        return value
+
+    return _run

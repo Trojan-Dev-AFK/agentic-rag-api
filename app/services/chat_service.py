@@ -17,12 +17,36 @@ from app.agent.tools.vector_search import (
     set_search_company_scope,
     set_search_query_state,
 )
+from app.core.config import settings
 from app.core.exceptions import AgentError
 from app.core.logger import get_logger
+from app.core.runtime_controls import (
+    cache_delete_prefix,
+    cache_get_json,
+    cache_set_json,
+    idempotency_get,
+    idempotency_set,
+    rate_limit_exceeded,
+)
 from app.db.models import ChatConversation, ChatMessage, User
 from app.schemas.chat import ChatConversationResponse, ChatMessageResponse
 
 logger = get_logger(__name__)
+
+
+def _sanitize_pagination(*, limit: int | None, offset: int | None) -> tuple[int, int]:
+    safe_limit = settings.DEFAULT_LIST_LIMIT if limit is None else limit
+    safe_limit = max(1, min(safe_limit, settings.MAX_LIST_LIMIT))
+    safe_offset = 0 if offset is None else max(0, offset)
+    return safe_limit, safe_offset
+
+
+def _conversation_list_cache_key(*, user_id: str, company_id: str) -> str:
+    return f"cache:chat:conversations:{company_id}:{user_id}"
+
+
+def _conversation_messages_cache_key(*, conversation_id: str) -> str:
+    return f"cache:chat:messages:{conversation_id}"
 
 
 def _to_conversation_response(conversation: ChatConversation) -> ChatConversationResponse:
@@ -89,6 +113,7 @@ async def invoke_agent(
     current_user: User,
     db: AsyncSession,
     conversation_id: str | None,
+    idempotency_key: str | None,
 ) -> tuple[str, str]:
     """Run the graph workflow, persist user/assistant turns, and return answer plus conversation ID."""
     logger.info(
@@ -98,6 +123,7 @@ async def invoke_agent(
             "role": str(current_user.role),
             "company_id": current_user.company_id,
             "conversation_id": conversation_id,
+            "idempotency_key": bool(idempotency_key),
             "query_preview": query[:120],
         },
     )
@@ -111,6 +137,23 @@ async def invoke_agent(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission to perform this action.",
         )
+
+    chat_limit_key = f"rl:chat:{current_user.id}"
+    if await rate_limit_exceeded(
+        key=chat_limit_key,
+        limit=settings.CHAT_RATE_LIMIT_REQUESTS,
+        window_seconds=settings.CHAT_RATE_LIMIT_WINDOW_SECONDS,
+    ):
+        logger.warning("Chat invoke throttled by rate limiter", extra={"user_id": current_user.id})
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many chat requests")
+
+    idem_cache_key: str | None = None
+    normalized_idem = (idempotency_key or "").strip()
+    if normalized_idem:
+        idem_cache_key = f"idem:chat:{current_user.id}:{normalized_idem}"
+        cached = await idempotency_get(key=idem_cache_key)
+        if cached:
+            return cached
 
     if conversation_id:
         conversation = await _get_scoped_conversation(
@@ -186,6 +229,11 @@ async def invoke_agent(
     conversation.updated_at = datetime.now(UTC)
     await db.commit()
 
+    await cache_delete_prefix(
+        prefix=_conversation_list_cache_key(user_id=current_user.id, company_id=current_user.company_id)
+    )
+    await cache_delete_prefix(prefix=_conversation_messages_cache_key(conversation_id=conversation.id))
+
     logger.info(
         "Chat response ready",
         extra={
@@ -196,16 +244,44 @@ async def invoke_agent(
             "message_turns": len(final_state["messages"]),
         },
     )
+
+    if idem_cache_key:
+        await idempotency_set(
+            key=idem_cache_key,
+            response=final_message,
+            conversation_id=conversation.id,
+            ttl_seconds=settings.CHAT_IDEMPOTENCY_TTL_SECONDS,
+        )
+
     return final_message, conversation.id
 
 
-async def list_conversations(*, db: AsyncSession, current_user: User) -> list[ChatConversationResponse]:
+async def list_conversations(
+    *,
+    db: AsyncSession,
+    current_user: User,
+    limit: int | None = None,
+    offset: int | None = None,
+) -> list[ChatConversationResponse]:
     """List all conversations owned by the current user, newest first."""
     if not current_user.company_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission to perform this action.",
         )
+
+    safe_limit, safe_offset = _sanitize_pagination(limit=limit, offset=offset)
+    cache_key = f"{_conversation_list_cache_key(user_id=current_user.id, company_id=current_user.company_id)}:{safe_limit}:{safe_offset}"
+    cached = await cache_get_json(key=cache_key)
+    if isinstance(cached, list):
+        try:
+            return [ChatConversationResponse(**item) for item in cached if isinstance(item, dict)]
+        except Exception as exc:
+            logger.warning(
+                "Conversation list cache payload invalid — bypassing cache",
+                extra={"key": cache_key, "user_id": current_user.id},
+                exc_info=exc,
+            )
 
     result = await db.execute(
         select(ChatConversation)
@@ -214,9 +290,17 @@ async def list_conversations(*, db: AsyncSession, current_user: User) -> list[Ch
             ChatConversation.company_id == current_user.company_id,
         )
         .order_by(ChatConversation.updated_at.desc())
+        .offset(safe_offset)
+        .limit(safe_limit)
     )
     conversations = result.scalars().all()
-    return [_to_conversation_response(item) for item in conversations]
+    response_rows = [_to_conversation_response(item) for item in conversations]
+    await cache_set_json(
+        key=cache_key,
+        payload=[item.model_dump(mode="json") for item in response_rows],
+        ttl_seconds=settings.CHAT_HISTORY_CACHE_TTL_SECONDS,
+    )
+    return response_rows
 
 
 async def get_conversation_messages(
@@ -224,16 +308,37 @@ async def get_conversation_messages(
     conversation_id: str,
     db: AsyncSession,
     current_user: User,
+    limit: int | None = None,
+    offset: int | None = None,
 ) -> list[ChatMessageResponse]:
     """Return persisted messages for one user-scoped conversation."""
-    conversation = await _get_scoped_conversation(
-        conversation_id=conversation_id,
-        current_user=current_user,
-        db=db,
-    )
+    conversation = await _get_scoped_conversation(conversation_id=conversation_id, current_user=current_user, db=db)
+
+    safe_limit, safe_offset = _sanitize_pagination(limit=limit, offset=offset)
+    cache_key = f"{_conversation_messages_cache_key(conversation_id=conversation.id)}:{safe_limit}:{safe_offset}"
+    cached = await cache_get_json(key=cache_key)
+    if isinstance(cached, list):
+        try:
+            return [ChatMessageResponse(**item) for item in cached if isinstance(item, dict)]
+        except Exception as exc:
+            logger.warning(
+                "Conversation messages cache payload invalid — bypassing cache",
+                extra={"key": cache_key, "conversation_id": conversation.id},
+                exc_info=exc,
+            )
 
     result = await db.execute(
-        select(ChatMessage).where(ChatMessage.conversation_id == conversation.id).order_by(ChatMessage.created_at.asc())
+        select(ChatMessage)
+        .where(ChatMessage.conversation_id == conversation.id)
+        .order_by(ChatMessage.created_at.asc())
+        .offset(safe_offset)
+        .limit(safe_limit)
     )
     messages = result.scalars().all()
-    return [_to_message_response(item) for item in messages]
+    response_rows = [_to_message_response(item) for item in messages]
+    await cache_set_json(
+        key=cache_key,
+        payload=[item.model_dump(mode="json") for item in response_rows],
+        ttl_seconds=settings.CHAT_HISTORY_CACHE_TTL_SECONDS,
+    )
+    return response_rows

@@ -49,6 +49,8 @@ async def list_documents(
         default=None,
         description="Filter by company UUID. Ignored for admin (always their own company); optional for super_admin.",
     ),
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int | None = Query(default=None, ge=0),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin_or_super_admin),
 ):
@@ -58,7 +60,16 @@ async def list_documents(
     **admin**: always returns documents from their own company only.
     **super_admin**: returns documents for the specified ``company_id``; if omitted, returns all documents.
     """
-    return await documents_service.list_documents(company_id=company_id, db=db, current_user=current_user)
+    service_kwargs: dict = {
+        "company_id": company_id,
+        "db": db,
+        "current_user": current_user,
+    }
+    if limit is not None:
+        service_kwargs["limit"] = limit
+    if offset is not None:
+        service_kwargs["offset"] = offset
+    return await documents_service.list_documents(**service_kwargs)
 
 
 @router.get("/{document_id}", response_model=DocumentResponse, status_code=200)

@@ -4,11 +4,19 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.logger import get_logger
 from app.db.models import Company, User
 from app.schemas.companies import CompanyCreate, CompanyUpdate
 
 logger = get_logger(__name__)
+
+
+def _sanitize_pagination(*, limit: int | None, offset: int | None) -> tuple[int, int]:
+    safe_limit = settings.DEFAULT_LIST_LIMIT if limit is None else limit
+    safe_limit = max(1, min(safe_limit, settings.MAX_LIST_LIMIT))
+    safe_offset = 0 if offset is None else max(0, offset)
+    return safe_limit, safe_offset
 
 
 async def create_company(*, company_data: CompanyCreate, db: AsyncSession, current_user: User) -> Company:
@@ -37,9 +45,16 @@ async def create_company(*, company_data: CompanyCreate, db: AsyncSession, curre
     return company
 
 
-async def list_companies(*, db: AsyncSession, current_user: User) -> list[Company]:
+async def list_companies(
+    *,
+    db: AsyncSession,
+    current_user: User,
+    limit: int | None = None,
+    offset: int | None = None,
+) -> list[Company]:
     """List all companies ordered alphabetically."""
-    result = await db.execute(select(Company).order_by(Company.name))
+    safe_limit, safe_offset = _sanitize_pagination(limit=limit, offset=offset)
+    result = await db.execute(select(Company).order_by(Company.name).offset(safe_offset).limit(safe_limit))
     companies = result.scalars().all()
     logger.info("Companies listed", extra={"count": len(companies), "actor": current_user.id})
     return list(companies)

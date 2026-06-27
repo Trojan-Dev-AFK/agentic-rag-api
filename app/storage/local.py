@@ -24,16 +24,23 @@ class LocalStorage(StorageBackend):
 
         logger.info("Writing file to local storage", extra={"company_id": company_id, "path": file_path})
         try:
-            content = await file.read()
+            total_bytes = 0
             with open(file_path, "wb") as f:
-                f.write(content)
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    total_bytes += len(chunk)
         except OSError as exc:
             logger.error("Local file write failed", extra={"path": file_path}, exc_info=exc)
             raise
+        finally:
+            await file.seek(0)
 
         logger.info(
             "File written to local storage",
-            extra={"company_id": company_id, "path": file_path, "bytes": len(content)},
+            extra={"company_id": company_id, "path": file_path, "bytes": total_bytes},
         )
         return file_path
 

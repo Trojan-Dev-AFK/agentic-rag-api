@@ -4,6 +4,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.logger import get_logger
 from app.core.security import get_password_hash
 from app.db.models import Company, User, UserRole
@@ -12,6 +13,13 @@ from app.schemas.users import UserCreate, UserResponse, UserUpdate
 logger = get_logger(__name__)
 
 _SUPER_ADMIN_ROLE_ERROR = "The super_admin role cannot be assigned via this endpoint. Use the bootstrap script."
+
+
+def _sanitize_pagination(*, limit: int | None, offset: int | None) -> tuple[int, int]:
+    safe_limit = settings.DEFAULT_LIST_LIMIT if limit is None else limit
+    safe_limit = max(1, min(safe_limit, settings.MAX_LIST_LIMIT))
+    safe_offset = 0 if offset is None else max(0, offset)
+    return safe_limit, safe_offset
 
 
 def _assert_same_company(current_user: User, target_company_id: str | None) -> None:
@@ -96,14 +104,30 @@ async def create_user(*, user_data: UserCreate, db: AsyncSession, current_user: 
     return _to_user_response(new_user)
 
 
-async def list_users(*, company_id: str | None, db: AsyncSession, current_user: User) -> list[UserResponse]:
+async def list_users(
+    *,
+    company_id: str | None,
+    limit: int | None = None,
+    offset: int | None = None,
+    db: AsyncSession,
+    current_user: User,
+) -> list[UserResponse]:
     """List users based on actor role and optional company filter."""
+    safe_limit, safe_offset = _sanitize_pagination(limit=limit, offset=offset)
     if current_user.role == UserRole.ADMIN:
-        query = select(User).filter(User.company_id == current_user.company_id).order_by(User.username)
+        query = (
+            select(User)
+            .filter(User.company_id == current_user.company_id)
+            .order_by(User.username)
+            .offset(safe_offset)
+            .limit(safe_limit)
+        )
     elif company_id:
         query = select(User).filter(User.company_id == company_id).order_by(User.username)
+        query = query.offset(safe_offset).limit(safe_limit)
     else:
         query = select(User).filter(User.role != UserRole.SUPER_ADMIN).order_by(User.username)
+        query = query.offset(safe_offset).limit(safe_limit)
 
     result = await db.execute(query)
     users = result.scalars().all()

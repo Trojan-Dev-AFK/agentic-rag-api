@@ -16,7 +16,7 @@ def test_chat_denies_user_without_company_scope(test_client, monkeypatch, overri
         role=UserRole.ADMIN, company_id=None, user_id="u-1"
     )
 
-    async def _invoke_agent(*, query, current_user, db, conversation_id):
+    async def _invoke_agent(*, query, current_user, db, conversation_id, idempotency_key):
         from fastapi import HTTPException
 
         raise HTTPException(status_code=403, detail="You do not have permission to perform this action.")
@@ -34,7 +34,7 @@ def test_chat_success_path(test_client, monkeypatch, override_db):
         role=UserRole.ADMIN, company_id="c-1", user_id="u-1"
     )
 
-    async def _invoke_agent(*, query, current_user, db, conversation_id):
+    async def _invoke_agent(*, query, current_user, db, conversation_id, idempotency_key):
         return "answer", "conv-1"
 
     monkeypatch.setattr(chat_service, "invoke_agent", _invoke_agent)

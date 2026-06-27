@@ -59,6 +59,8 @@ async def list_users(
         default=None,
         description="Filter by company UUID. Required for super_admin; ignored for admin (always scoped to their own company).",
     ),
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int | None = Query(default=None, ge=0),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin_or_super_admin),
 ):
@@ -69,7 +71,16 @@ async def list_users(
     **super_admin**: returns users for the specified ``company_id``; if omitted, returns all users
     across every company (excluding other ``super_admin`` accounts).
     """
-    return await users_service.list_users(company_id=company_id, db=db, current_user=current_user)
+    service_kwargs: dict = {
+        "company_id": company_id,
+        "db": db,
+        "current_user": current_user,
+    }
+    if limit is not None:
+        service_kwargs["limit"] = limit
+    if offset is not None:
+        service_kwargs["offset"] = offset
+    return await users_service.list_users(**service_kwargs)
 
 
 @router.get("/{user_id}", response_model=UserResponse)

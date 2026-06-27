@@ -1,5 +1,18 @@
-# Spins up postgres (pgvector) and Redis
-version: "3.8"
+# Spins up API + worker + postgres (pgvector) + Redis with one command
+x-app-base: &app_base
+  image: agentic-rag-api:v2026.06.27
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file:
+    - .env
+  environment:
+    DATABASE_URL_ASYNC: postgresql+asyncpg://agenticraguser:agenticragpwd@db:5432/rag_db
+    DATABASE_URL_SYNC: postgresql://agenticraguser:agenticragpwd@db:5432/rag_db
+    REDIS_URL: redis://redis:6379/0
+  volumes:
+    - uploads_data:/app/uploads
+  restart: on-failure:5
 
 services:
   db:
@@ -13,6 +26,11 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agenticraguser -d rag_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   redis:
@@ -20,7 +38,55 @@ services:
     container_name: agentic_rag_redis
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
+
+  app:
+    <<: *app_base
+    container_name: agentic_rag_api
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "/app/.venv/bin/alembic upgrade head &&
+      /app/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "8000:8000"
+
+  worker:
+    <<: *app_base
+    container_name: agentic_rag_worker
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+    command: /app/.venv/bin/celery -A app.worker.celery_app worker --pool=solo --loglevel=info
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/app/.venv/bin/celery -A app.worker.celery_app inspect ping -d celery@$$HOSTNAME --timeout=5 | grep -q pong",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
 
 volumes:
   postgres_data:
+  uploads_data:

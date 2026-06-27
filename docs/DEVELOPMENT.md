@@ -11,9 +11,7 @@ git clone <repo>
 cd agentic-rag-api
 uv sync --group dev   # installs runtime + dev tools (ruff, black, interrogate)
 cp .env.example .env  # fill in local values
-docker-compose up -d  # start PostgreSQL + Redis
-alembic upgrade head  # apply migrations
-uvicorn app.main:app --reload
+docker-compose up -d  # start API + worker + PostgreSQL + Redis
 ```
 
 The API is available at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
@@ -67,6 +65,8 @@ uv run black --check .                          # verify formatting
 uv run python scripts/lint_thin_endpoints.py   # enforce thin endpoint imports
 uv run interrogate app/                         # docstring coverage (minimum 80%)
 uv run vulture app scripts --min-confidence 70 # dead-code scan (production code only)
+uv run pip-audit --ignore-vuln CVE-2025-3000   # dependency vulnerability scan
+uv run bandit -r app -q -x app/schemas         # static security analysis
 ```
 
 Configuration lives in `pyproject.toml` under `[tool.ruff]`, `[tool.black]`,

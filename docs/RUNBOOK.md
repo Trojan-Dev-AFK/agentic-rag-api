@@ -41,10 +41,25 @@ Minimum required values:
 ```env
 DATABASE_URL_ASYNC=postgresql+asyncpg://user:pass@localhost:5432/rag_db
 DATABASE_URL_SYNC=postgresql://user:pass@localhost:5432/rag_db
+DB_POOL_SIZE=10
+DB_MAX_OVERFLOW=20
 REDIS_URL=redis://localhost:6379/0
 SECRET_KEY=<long-random-string>
 ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=60
+LOGIN_RATE_LIMIT_ATTEMPTS=10
+LOGIN_RATE_LIMIT_WINDOW_SECONDS=60
+CHAT_RATE_LIMIT_REQUESTS=30
+CHAT_RATE_LIMIT_WINDOW_SECONDS=60
+CHAT_IDEMPOTENCY_TTL_SECONDS=300
+TOKEN_SESSION_CACHE_TTL_SECONDS=60
+VECTOR_SEARCH_CACHE_TTL_SECONDS=300
+CHAT_HISTORY_CACHE_TTL_SECONDS=60
+DOCUMENT_METADATA_CACHE_TTL_SECONDS=60
+READINESS_REQUIRE_REDIS=true
+DEFAULT_LIST_LIMIT=50
+MAX_LIST_LIMIT=200
+MAX_UPLOAD_BYTES=26214400
 EMBEDDING_MODEL=all-MiniLM-L6-v2
 CHUNK_SIZE=1000
 CHUNK_OVERLAP=200
@@ -59,9 +74,13 @@ See [README.md](../README.md) for all available variables.
 
 ```bash
 docker-compose up -d
+docker compose ps
 ```
 
-Starts PostgreSQL 16 with pgvector and Redis.
+Starts API, Celery worker, PostgreSQL 16 with pgvector, and Redis.
+Services use healthchecks; wait for `healthy` status before traffic.
+
+Compose image tags are pinned directly in `docker-compose.yml`.
 
 ### 4. Run migrations
 
@@ -69,7 +88,8 @@ Starts PostgreSQL 16 with pgvector and Redis.
 alembic upgrade head
 ```
 
-The API will refuse to start if this step is skipped.
+Required for non-container/local process startup.
+In Docker Compose mode, API startup runs migrations automatically before serving requests.
 
 ### 5. Pull the LLM
 
@@ -84,7 +104,20 @@ first use.
 
 ## Starting services
 
+### API container
+
+```bash
+docker build -t agentic-rag-api:latest .
+docker run --rm -p 8000:8000 --env-file .env agentic-rag-api:latest
+```
+
+Use this path for containerized deployments. PostgreSQL and Redis must be reachable from configured URLs.
+
 ### API server
+
+When using Docker Compose, API and Celery worker both start automatically with `docker-compose up -d`.
+
+For non-container/local process startup, run:
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -132,10 +165,25 @@ celery -A app.worker.celery_app control shutdown
 |----------|----------|---------|-------------|
 | `DATABASE_URL_ASYNC` | yes | — | asyncpg URL for FastAPI |
 | `DATABASE_URL_SYNC` | yes | — | psycopg2 URL for Celery |
+| `DB_POOL_SIZE` | no | `10` | API DB connection pool size |
+| `DB_MAX_OVERFLOW` | no | `20` | API DB max overflow connections |
 | `REDIS_URL` | yes | — | Redis connection string |
 | `SECRET_KEY` | yes | — | JWT signing key (rotate periodically) |
 | `ALGORITHM` | yes | — | JWT algorithm (use `HS256`) |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | yes | — | Token TTL in minutes |
+| `LOGIN_RATE_LIMIT_ATTEMPTS` | no | `10` | Max login attempts per IP+username window |
+| `LOGIN_RATE_LIMIT_WINDOW_SECONDS` | no | `60` | Login rate-limit window in seconds |
+| `CHAT_RATE_LIMIT_REQUESTS` | no | `30` | Max chat invoke requests per user window |
+| `CHAT_RATE_LIMIT_WINDOW_SECONDS` | no | `60` | Chat rate-limit window in seconds |
+| `CHAT_IDEMPOTENCY_TTL_SECONDS` | no | `300` | Redis TTL for chat idempotency cache |
+| `TOKEN_SESSION_CACHE_TTL_SECONDS` | no | `60` | Redis TTL for token-session validation cache |
+| `VECTOR_SEARCH_CACHE_TTL_SECONDS` | no | `300` | Redis TTL for vector-search result cache |
+| `CHAT_HISTORY_CACHE_TTL_SECONDS` | no | `60` | Redis TTL for chat conversation/message read cache |
+| `DOCUMENT_METADATA_CACHE_TTL_SECONDS` | no | `60` | Redis TTL for document list/get metadata cache |
+| `READINESS_REQUIRE_REDIS` | no | `true` | Require Redis connectivity for `/readyz` |
+| `DEFAULT_LIST_LIMIT` | no | `50` | Default pagination limit for list/history endpoints |
+| `MAX_LIST_LIMIT` | no | `200` | Maximum accepted pagination limit |
+| `MAX_UPLOAD_BYTES` | no | `26214400` | Maximum PDF upload size in bytes (returns `413` when exceeded) |
 | `EMBEDDING_MODEL` | yes | — | HuggingFace model name |
 | `CHUNK_SIZE` | yes | — | Max chars per text chunk |
 | `CHUNK_OVERLAP` | yes | — | Overlap chars between adjacent chunks |
@@ -184,7 +232,7 @@ Every log line is a single JSON object:
   "logger": "app.api.v1.endpoints.documents",
   "request_id": "a1b2c3d4-...",
   "msg": "Document upload received",
-  "filename": "report.pdf",
+  "file_name": "report.pdf",
   "company_id": "c-...",
   "actor": "u-..."
 }
@@ -218,6 +266,17 @@ Every log line is a single JSON object:
 - The chat graph uses a recursion limit of 8 to prevent long tool-call loops.
 - The vector-search tool blocks repeated identical searches in a single request after one repeat.
 - Chat conversations and messages are persisted in `chat_conversations` and `chat_messages`.
+- Login and chat endpoints are Redis rate-limited (`429` when exceeded).
+- Chat invoke supports `X-Idempotency-Key` to deduplicate retried requests for a bounded TTL.
+- List/history endpoints support pagination via `limit` and `offset` query params.
+- Document uploads larger than `MAX_UPLOAD_BYTES` are rejected with `413`.
+
+### Health and readiness probes
+
+- `GET /healthz`: process liveness probe, returns `200` when API process is running.
+- `GET /readyz`: dependency readiness probe.
+  - Verifies database connectivity.
+  - Verifies Redis connectivity when `READINESS_REQUIRE_REDIS=true`.
 
 ### Log level
 
@@ -231,8 +290,6 @@ Set `LOG_LEVEL=DEBUG` in `.env` to enable:
 ## Common operational tasks
 
 ### Create the first super_admin
-
-  "file_name": "report.pdf",
 
 ```bash
 uv run python scripts/create_superadmin.py --username superadmin --password <secure-password>
@@ -329,4 +386,10 @@ uv add --group dev <p>  # add a dev-only dependency
 uv remove <package>     # remove a dependency
 uv sync                 # sync venv to uv.lock (runtime only)
 uv sync --group dev     # sync venv including dev tools
+
+# Security scans
+uv run pip-audit --ignore-vuln CVE-2025-3000
+uv run bandit -r app -q -x app/schemas
 ```
+
+`CVE-2025-3000` is currently ignored because no upstream fixed torch release is available.

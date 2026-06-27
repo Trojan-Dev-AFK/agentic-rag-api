@@ -10,13 +10,17 @@ Project history up to 2026-06-27.
 - New database tables:
   - `chat_conversations`
   - `chat_messages`
-- New enum type: `chatmessagerole` (`user`, `assistant`).
 - New chat endpoints:
   - `GET /v1/chat/conversations`
   - `GET /v1/chat/conversations/{conversation_id}/messages`
 - Conversation-aware chat invoke:
   - `POST /v1/chat/invoke` now accepts optional `conversation_id`.
   - Response now includes `conversation_id`.
+- Redis cache layer coverage for hot read paths:
+  - token-session validation cache
+  - vector-search response cache
+  - chat history read caches
+  - document metadata read caches
 
 ### Changed
 
@@ -26,6 +30,23 @@ Project history up to 2026-06-27.
   - Loads prior turns into graph input context.
   - Persists one row per chat turn in `chat_messages` (`user_query` + `assistant_response`).
 - Startup schema verification now requires chat history tables.
+- Added Redis-backed runtime protections:
+  - Login rate limiting
+  - Chat invoke rate limiting
+  - Chat idempotency cache via `X-Idempotency-Key`
+- Added operational probes:
+  - `GET /healthz`
+  - `GET /readyz` (DB + optional Redis)
+- Added cache TTL settings in configuration:
+  - `TOKEN_SESSION_CACHE_TTL_SECONDS`
+  - `VECTOR_SEARCH_CACHE_TTL_SECONDS`
+  - `CHAT_HISTORY_CACHE_TTL_SECONDS`
+  - `DOCUMENT_METADATA_CACHE_TTL_SECONDS`
+- Hardened Celery runtime defaults for reliability:
+  - late acknowledgements
+  - reject on worker loss
+  - startup retry
+  - prefetch multiplier = 1
 
 ### Database
 
@@ -42,6 +63,7 @@ Project history up to 2026-06-27.
 ### Testing
 
 - Added/updated unit and integration tests for conversation persistence and retrieval.
+- Added tests covering login throttle and updated chat invoke signatures.
 
 ---
 

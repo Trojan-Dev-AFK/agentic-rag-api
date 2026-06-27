@@ -51,6 +51,7 @@ username=alice&password=secret123
 - JWT includes `jti` (JWT ID) for tracking sessions in `TokenSession` table
 - Token expires after `ACCESS_TOKEN_EXPIRE_MINUTES` (from config)
 - Tokens are validated by checking `TokenSession` rows at each protected endpoint
+- Login is rate-limited by IP + username and may return `429`
 
 ---
 
@@ -174,6 +175,11 @@ List users.
 - `company_id` (optional, string UUID)
   - **admin**: ignored (always returns own company users)
   - **super_admin**: filter by specified company; if omitted, returns all users (excluding other super_admins)
+- `limit` (optional, integer)
+  - Page size. Uses `DEFAULT_LIST_LIMIT` when omitted.
+  - Capped by `MAX_LIST_LIMIT`.
+- `offset` (optional, integer)
+  - Zero-based row offset for pagination.
 
 **Response (200 OK):**
 ```json
@@ -355,6 +361,13 @@ Create a new company (tenant).
 
 List all companies.
 
+**Query Parameters:**
+- `limit` (optional, integer)
+  - Page size. Uses `DEFAULT_LIST_LIMIT` when omitted.
+  - Capped by `MAX_LIST_LIMIT`.
+- `offset` (optional, integer)
+  - Zero-based row offset for pagination.
+
 **Response (200 OK):**
 ```json
 [
@@ -433,7 +446,7 @@ All fields are optional.
 
 **Access:** `super_admin` only
 
-Delete a company. This cascades to all associated users (their `company_id` → NULL, which violates constraints and may fail).
+Delete a company. This cascades through related users, token sessions, documents, chunks, and chat history.
 
 **Response (204 No Content)**
 
@@ -475,9 +488,12 @@ file=<binary PDF data>
 - The file is stored to S3 or local storage
 - Celery worker processes asynchronously
 - Status will transition: `pending` → `processing` → `completed` or `failed`
+- Successful upload invalidates related document and retrieval caches for the target company
+- Uploads above `MAX_UPLOAD_BYTES` are rejected with `413`
 
 **Errors:**
 - `400 Bad Request` — company not found
+- `413 Payload Too Large` — uploaded file exceeds configured upload limit
 - `403 Forbidden` — insufficient role
 
 ---
@@ -488,10 +504,17 @@ file=<binary PDF data>
 
 List documents.
 
+This endpoint may serve short-lived Redis-cached metadata responses.
+
 **Query Parameters:**
 - `company_id` (optional, string UUID)
   - **admin**: ignored (always returns own company documents)
   - **super_admin**: filter by specified company; if omitted, returns all documents
+- `limit` (optional, integer)
+  - Page size. Uses `DEFAULT_LIST_LIMIT` when omitted.
+  - Capped by `MAX_LIST_LIMIT`.
+- `offset` (optional, integer)
+  - Zero-based row offset for pagination.
 
 **Response (200 OK):**
 ```json
@@ -518,6 +541,8 @@ List documents.
 **Access:** `admin` (same company) or `super_admin` (any document)
 
 Retrieve a specific document's status and metadata.
+
+This endpoint may serve short-lived Redis-cached metadata responses.
 
 **Response (200 OK):**
 ```json
@@ -547,6 +572,7 @@ Retrieve a specific document's status and metadata.
 
 Delete a document and cascade-delete all its vector chunks from the database.
 Also removes the source PDF from storage.
+Related document/retrieval caches are invalidated.
 
 **Response (204 No Content)**
 
@@ -567,6 +593,8 @@ Invoke the agent with a natural language query. Returns a grounded conversationa
 **Safeguards:**
 - LangGraph recursion limit is capped at `8` per request.
 - Repeated identical `search_documents` queries are blocked after one repeat to prevent loops.
+- Requests are rate-limited per authenticated user.
+- Optional idempotency: send `X-Idempotency-Key` to deduplicate retried invoke requests.
 
 **Request:**
 ```json
@@ -588,6 +616,7 @@ Invoke the agent with a natural language query. Returns a grounded conversationa
 - Omit `conversation_id` to create a new persisted conversation.
 - Provide `conversation_id` to continue an existing conversation.
 - Conversation access is user-scoped and company-scoped.
+- Successful writes invalidate chat history caches for that conversation/user.
 
 ---
 
@@ -596,6 +625,15 @@ Invoke the agent with a natural language query. Returns a grounded conversationa
 **Access:** `admin` and `employee` (company users only); `super_admin` blocked
 
 List persisted conversations owned by the authenticated user.
+
+This endpoint may serve short-lived Redis-cached responses.
+
+**Query Parameters:**
+- `limit` (optional, integer)
+  - Page size. Uses `DEFAULT_LIST_LIMIT` when omitted.
+  - Capped by `MAX_LIST_LIMIT`.
+- `offset` (optional, integer)
+  - Zero-based row offset for pagination.
 
 **Response (200 OK):**
 ```json
@@ -617,6 +655,15 @@ List persisted conversations owned by the authenticated user.
 
 Return persisted messages for one conversation owned by the authenticated user.
 
+This endpoint may serve short-lived Redis-cached responses.
+
+**Query Parameters:**
+- `limit` (optional, integer)
+  - Page size. Uses `DEFAULT_LIST_LIMIT` when omitted.
+  - Capped by `MAX_LIST_LIMIT`.
+- `offset` (optional, integer)
+  - Zero-based row offset for pagination.
+
 **Response (200 OK):**
 ```json
 [
@@ -634,6 +681,22 @@ Return persisted messages for one conversation owned by the authenticated user.
 - `404 Not Found` — conversation does not exist or does not belong to the authenticated user
 - `502 Bad Gateway` — agent orchestration failed (LLM/tool failure surfaced as `AgentError`)
 - `500 Internal Server Error` — unexpected unhandled server error
+
+---
+
+## Operational Endpoints
+
+### `GET /healthz`
+
+Process liveness check. Returns `200` when API process is up.
+
+### `GET /readyz`
+
+Dependency readiness check.
+
+- Validates database connectivity.
+- Validates Redis connectivity when `READINESS_REQUIRE_REDIS=true`.
+- Returns `503` when dependencies are not ready.
 
 ---
 
@@ -659,6 +722,9 @@ All endpoints follow standard HTTP status codes and return error details in JSON
 | 401 | Unauthorized (invalid/missing JWT) |
 | 403 | Forbidden (role/company insufficient) |
 | 404 | Not Found (resource missing) |
+| 413 | Payload Too Large (upload exceeds configured maximum) |
+| 429 | Too Many Requests (rate-limited) |
+| 502 | Bad Gateway (agent/tool orchestration failure) |
 | 500 | Internal Server Error |
 
 ---

@@ -23,9 +23,7 @@ Cross-company access on users and documents always returns **403** — never a s
 ```bash
 uv sync --group dev       # install all dependencies
 cp .env.example .env      # configure environment
-docker-compose up -d      # start PostgreSQL + Redis
-alembic upgrade head      # apply migrations
-uvicorn app.main:app --reload
+docker-compose up -d      # start API + worker + PostgreSQL + Redis
 ```
 
 Interactive API docs: `http://localhost:8000/docs`
@@ -60,6 +58,8 @@ Full setup guide: [docs/RUNBOOK.md](docs/RUNBOOK.md)
 | `POST` | `/v1/chat/invoke` | Admin or Employee |
 | `GET` | `/v1/chat/conversations` | Admin or Employee |
 | `GET` | `/v1/chat/conversations/{conversation_id}/messages` | Admin or Employee |
+| `GET` | `/healthz` | Public (liveness) |
+| `GET` | `/readyz` | Public (readiness) |
 
 ---
 
@@ -94,9 +94,26 @@ Create a `.env` file in the project root:
 # Database
 DATABASE_URL_ASYNC=postgresql+asyncpg://agenticraguser:agenticragpwd@localhost:5432/rag_db
 DATABASE_URL_SYNC=postgresql://agenticraguser:agenticragpwd@localhost:5432/rag_db
+DB_POOL_SIZE=10
+DB_MAX_OVERFLOW=20
 
 # Redis
 REDIS_URL=redis://localhost:6379/0
+
+# Runtime controls
+LOGIN_RATE_LIMIT_ATTEMPTS=10
+LOGIN_RATE_LIMIT_WINDOW_SECONDS=60
+CHAT_RATE_LIMIT_REQUESTS=30
+CHAT_RATE_LIMIT_WINDOW_SECONDS=60
+CHAT_IDEMPOTENCY_TTL_SECONDS=300
+TOKEN_SESSION_CACHE_TTL_SECONDS=60
+VECTOR_SEARCH_CACHE_TTL_SECONDS=300
+CHAT_HISTORY_CACHE_TTL_SECONDS=60
+DOCUMENT_METADATA_CACHE_TTL_SECONDS=60
+READINESS_REQUIRE_REDIS=true
+DEFAULT_LIST_LIMIT=50
+MAX_LIST_LIMIT=200
+MAX_UPLOAD_BYTES=26214400
 
 # Security
 SECRET_KEY=your-secret-key-here
@@ -125,6 +142,16 @@ LOCAL_UPLOAD_DIR=uploads
 # S3_BUCKET_NAME=agentic-rag-api
 ```
 
+## Container deployment
+
+```bash
+# Build
+docker build -t agentic-rag-api:latest .
+
+# Run API container (expects DB/Redis reachable from this network)
+docker run --rm -p 8000:8000 --env-file .env agentic-rag-api:latest
+```
+
 Full variable reference: [docs/RUNBOOK.md#environment-variables-reference](docs/RUNBOOK.md#environment-variables-reference)
 
 ---
@@ -137,6 +164,7 @@ Full variable reference: [docs/RUNBOOK.md#environment-variables-reference](docs/
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component diagram, request lifecycle, singleton model loading, storage backend design, RBAC model |
 | [docs/ENDPOINT_ACCESS_MATRIX.md](docs/ENDPOINT_ACCESS_MATRIX.md) | Quick role/access lookup for all endpoints |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Full setup, service startup/shutdown, migrations, monitoring, common ops tasks, S3 setup, backup/restore |
+| [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md) | Step-by-step production deployment sequence with Docker, migrations, API/worker startup, and S3 linking |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Code standards, docstring style, singleton pattern, adding endpoints, migrations, logging conventions |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Historical record of architecture, ingestion, RBAC, CI, and chat-history milestones |
 

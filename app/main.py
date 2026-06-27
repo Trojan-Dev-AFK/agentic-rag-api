@@ -11,6 +11,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -23,6 +24,7 @@ from app.core.exceptions import (
     unhandled_exception_handler,
 )
 from app.core.logger import get_logger, request_id_ctx, setup_logging
+from app.core.runtime_controls import redis_ping
 from app.db.session import engine
 
 # Initialise structured logging before anything else touches the logging system
@@ -186,3 +188,25 @@ app.include_router(chat.router, prefix="/v1/chat", tags=["Agent"])
 app.include_router(documents.router, prefix="/v1/documents", tags=["Documents"])
 app.include_router(companies.router, prefix="/v1/companies", tags=["Companies"])
 app.include_router(users.router, prefix="/v1/users", tags=["Users"])
+
+
+@app.get("/healthz", tags=["Ops"])
+async def healthz() -> dict[str, str]:
+    """Liveness probe endpoint for process-level health checks."""
+    return {"status": "ok"}
+
+
+@app.get("/readyz", tags=["Ops"])
+async def readyz() -> JSONResponse:
+    """Readiness probe endpoint validating core dependencies."""
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "not_ready", "reason": "database_unavailable"})
+
+    if settings.READINESS_REQUIRE_REDIS:
+        if not await redis_ping():
+            return JSONResponse(status_code=503, content={"status": "not_ready", "reason": "redis_unavailable"})
+
+    return JSONResponse(status_code=200, content={"status": "ready"})

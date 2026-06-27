@@ -6,19 +6,21 @@ splits the text into overlapping chunks, embeds each chunk with
 ``all-MiniLM-L6-v2``, and persists the vectors to PostgreSQL via pgvector.
 """
 
+import asyncio
 import os
+from typing import Any
 
 import pdfplumber
 import pypdfium2 as pdfium
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
-from rapidocr_onnxruntime import RapidOCR
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
 from app.core.logger import get_logger, request_id_ctx
+from app.core.runtime_controls import cache_delete_prefix
 from app.db.models import ChunkType, Document, DocumentChunk, ProcessingStatus
 from app.storage import get_storage
 from app.worker.celery_app import celery_app
@@ -35,7 +37,30 @@ session_local = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # ---------------------------------------------------------------------------
 _embedding_model: HuggingFaceEmbeddings | None = None
 _text_splitter: RecursiveCharacterTextSplitter | None = None
-_ocr_engine: RapidOCR | None = None
+_ocr_engine: Any | None = None
+_MAX_TASK_RETRIES = 3
+
+
+def _invalidate_company_caches(*, company_id: str | None, document_id: str) -> None:
+    """Best-effort cache invalidation for document/vector read paths after worker state changes."""
+    if not company_id:
+        return
+
+    async def _invalidate() -> None:
+        await cache_delete_prefix(prefix=f"cache:vector:{company_id}:")
+        await cache_delete_prefix(prefix=f"cache:docs:list:admin:{company_id}")
+        await cache_delete_prefix(prefix=f"cache:docs:list:superadmin:company:{company_id}")
+        await cache_delete_prefix(prefix="cache:docs:list:superadmin:all")
+        await cache_delete_prefix(prefix=f"cache:docs:get:{document_id}")
+
+    try:
+        asyncio.run(_invalidate())
+    except Exception as exc:
+        logger.warning(
+            "Worker cache invalidation failed — continuing",
+            extra={"doc_id": document_id, "company_id": company_id},
+            exc_info=exc,
+        )
 
 
 def _get_embedding_model() -> HuggingFaceEmbeddings:
@@ -59,13 +84,25 @@ def _get_text_splitter() -> RecursiveCharacterTextSplitter:
     return _text_splitter
 
 
-def _get_ocr_engine() -> RapidOCR:
-    """Return the process-level OCR engine, loading it on first call."""
+def _get_ocr_engine() -> Any | None:
+    """Return the process-level OCR engine, loading it on first call.
+
+    If OCR native dependencies are unavailable, returns ``None`` and OCR is skipped.
+    """
     global _ocr_engine
     if _ocr_engine is None:
-        logger.info("Loading OCR engine", extra={"engine": "rapidocr-onnxruntime"})
-        _ocr_engine = RapidOCR()
-        logger.info("OCR engine loaded")
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+
+            logger.info("Loading OCR engine", extra={"engine": "rapidocr-onnxruntime"})
+            _ocr_engine = RapidOCR()
+            logger.info("OCR engine loaded")
+        except Exception as exc:
+            logger.warning(
+                "OCR engine unavailable; OCR extraction will be skipped",
+                exc_info=exc,
+            )
+            return None
     return _ocr_engine
 
 
@@ -106,6 +143,9 @@ def _extract_ocr_blocks(local_path: str, page_indexes: list[int]) -> list[str]:
         return []
 
     ocr_engine = _get_ocr_engine()
+    if ocr_engine is None:
+        return []
+
     ocr_blocks: list[str] = []
     target_pages = set(page_indexes)
 
@@ -286,6 +326,7 @@ def process_pdf_task(self, document_id: str, storage_ref: str):
 
         doc.status = ProcessingStatus.COMPLETED
         db.commit()
+        _invalidate_company_caches(company_id=doc.company_id, document_id=document_id)
         logger.info(
             "PDF processing completed",
             extra={"doc_id": document_id, "chunks_stored": len(chunks), "pages": page_count},
@@ -300,12 +341,38 @@ def process_pdf_task(self, document_id: str, storage_ref: str):
         return {"status": "success", "chunks_processed": len(chunks)}
 
     except Exception as exc:
+        if self.request.retries < _MAX_TASK_RETRIES:
+            countdown = min(60, 2 ** (self.request.retries + 1))
+            logger.warning(
+                "PDF processing failed transiently — scheduling retry",
+                extra={
+                    "doc_id": document_id,
+                    "task_id": self.request.id,
+                    "retry_count": self.request.retries + 1,
+                    "max_retries": _MAX_TASK_RETRIES,
+                    "countdown_s": countdown,
+                },
+                exc_info=exc,
+            )
+            try:
+                db.rollback()
+                doc.status = ProcessingStatus.PENDING
+                db.commit()
+            except Exception as db_exc:
+                logger.warning(
+                    "Failed to set document status to PENDING before retry",
+                    extra={"doc_id": document_id},
+                    exc_info=db_exc,
+                )
+            raise self.retry(exc=exc, countdown=countdown, max_retries=_MAX_TASK_RETRIES) from exc
+
         logger.error(
             "PDF processing failed",
             extra={"doc_id": document_id, "storage_ref": storage_ref},
             exc_info=exc,
         )
         _set_failed_status(db=db, doc=doc, document_id=document_id)
+        _invalidate_company_caches(company_id=doc.company_id, document_id=document_id)
         return {"status": "failed", "error": str(exc)}
 
     finally:

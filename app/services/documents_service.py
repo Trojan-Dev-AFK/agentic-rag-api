@@ -4,14 +4,44 @@ from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.exceptions import StorageError
 from app.core.logger import get_logger
+from app.core.runtime_controls import cache_delete_prefix, cache_get_json, cache_set_json
 from app.db.models import Company, Document, User, UserRole
 from app.schemas.documents import DocumentResponse, UploadResponse
 from app.storage import get_storage
-from app.worker.tasks import process_pdf_task
 
 logger = get_logger(__name__)
+
+
+def _sanitize_pagination(*, limit: int | None, offset: int | None) -> tuple[int, int]:
+    safe_limit = settings.DEFAULT_LIST_LIMIT if limit is None else limit
+    safe_limit = max(1, min(safe_limit, settings.MAX_LIST_LIMIT))
+    safe_offset = 0 if offset is None else max(0, offset)
+    return safe_limit, safe_offset
+
+
+def _list_cache_key(*, current_user: User, company_id: str | None) -> str:
+    if current_user.role == UserRole.ADMIN:
+        return f"cache:docs:list:admin:{current_user.company_id}"
+    if company_id:
+        return f"cache:docs:list:superadmin:company:{company_id}"
+    return "cache:docs:list:superadmin:all"
+
+
+def _get_cache_key(*, document_id: str) -> str:
+    return f"cache:docs:get:{document_id}"
+
+
+async def _invalidate_document_caches(*, company_id: str | None, document_id: str | None = None) -> None:
+    if company_id:
+        await cache_delete_prefix(prefix=f"cache:docs:list:admin:{company_id}")
+        await cache_delete_prefix(prefix=f"cache:docs:list:superadmin:company:{company_id}")
+        await cache_delete_prefix(prefix=f"cache:vector:{company_id}:")
+    await cache_delete_prefix(prefix="cache:docs:list:superadmin:all")
+    if document_id:
+        await cache_delete_prefix(prefix=_get_cache_key(document_id=document_id))
 
 
 async def _assert_pdf_upload(file: UploadFile) -> None:
@@ -28,6 +58,15 @@ async def _assert_pdf_upload(file: UploadFile) -> None:
     await file.seek(0)
     if header != b"%PDF-":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is not a valid PDF")
+
+    file.file.seek(0, 2)
+    file_size = file.file.tell()
+    file.file.seek(0)
+    if file_size > settings.MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File too large. Maximum allowed size is {settings.MAX_UPLOAD_BYTES} bytes.",
+        )
 
 
 def _to_document_response(document: Document) -> DocumentResponse:
@@ -107,8 +146,12 @@ async def upload_document(
         extra={"doc_id": new_doc.id, "storage_ref": storage_ref},
     )
 
+    from app.worker.tasks import process_pdf_task
+
     process_pdf_task.delay(new_doc.id, storage_ref)
     logger.info("Processing task dispatched", extra={"doc_id": new_doc.id})
+
+    await _invalidate_document_caches(company_id=target_company_id, document_id=new_doc.id)
 
     return UploadResponse(
         message="Document accepted for processing",
@@ -117,16 +160,39 @@ async def upload_document(
     )
 
 
-async def list_documents(*, company_id: str | None, db: AsyncSession, current_user: User) -> list[DocumentResponse]:
+async def list_documents(
+    *,
+    company_id: str | None,
+    limit: int | None = None,
+    offset: int | None = None,
+    db: AsyncSession,
+    current_user: User,
+) -> list[DocumentResponse]:
     """List documents with company scoping based on actor role."""
+    safe_limit, safe_offset = _sanitize_pagination(limit=limit, offset=offset)
+    cache_key = f"{_list_cache_key(current_user=current_user, company_id=company_id)}:{safe_limit}:{safe_offset}"
+    cached = await cache_get_json(key=cache_key)
+    if isinstance(cached, list):
+        try:
+            return [DocumentResponse(**item) for item in cached if isinstance(item, dict)]
+        except Exception as exc:
+            logger.warning(
+                "Documents list cache payload invalid — bypassing cache", extra={"key": cache_key}, exc_info=exc
+            )
+
     if current_user.role == UserRole.ADMIN:
         query = (
-            select(Document).filter(Document.company_id == current_user.company_id).order_by(Document.created_at.desc())
+            select(Document)
+            .filter(Document.company_id == current_user.company_id)
+            .order_by(Document.created_at.desc())
+            .offset(safe_offset)
+            .limit(safe_limit)
         )
     elif company_id:
         query = select(Document).filter(Document.company_id == company_id).order_by(Document.created_at.desc())
+        query = query.offset(safe_offset).limit(safe_limit)
     else:
-        query = select(Document).order_by(Document.created_at.desc())
+        query = select(Document).order_by(Document.created_at.desc()).offset(safe_offset).limit(safe_limit)
 
     result = await db.execute(query)
     docs = result.scalars().all()
@@ -140,11 +206,27 @@ async def list_documents(*, company_id: str | None, db: AsyncSession, current_us
             "filter_company": company_id or (current_user.company_id if current_user.role == UserRole.ADMIN else "all"),
         },
     )
-    return [_to_document_response(doc) for doc in docs]
+    response_rows = [_to_document_response(doc) for doc in docs]
+    await cache_set_json(
+        key=cache_key,
+        payload=[item.model_dump(mode="json") for item in response_rows],
+        ttl_seconds=settings.DOCUMENT_METADATA_CACHE_TTL_SECONDS,
+    )
+    return response_rows
 
 
 async def get_document(*, document_id: str, db: AsyncSession, current_user: User) -> DocumentResponse:
     """Fetch one document by UUID with role-aware access control."""
+    cache_key = _get_cache_key(document_id=document_id)
+    cached = await cache_get_json(key=cache_key)
+    if isinstance(cached, dict):
+        cached_company_id = cached.get("company_id")
+        cached_response = cached.get("response")
+        if isinstance(cached_response, dict):
+            if current_user.role == UserRole.ADMIN and cached_company_id != current_user.company_id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+            return DocumentResponse(**cached_response)
+
     result = await db.execute(select(Document).filter(Document.id == document_id))
     doc = result.scalar_one_or_none()
 
@@ -165,7 +247,13 @@ async def get_document(*, document_id: str, db: AsyncSession, current_user: User
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
     logger.info("Document fetched", extra={"doc_id": document_id, "status": str(doc.status), "actor": current_user.id})
-    return _to_document_response(doc)
+    response_row = _to_document_response(doc)
+    await cache_set_json(
+        key=cache_key,
+        payload={"company_id": doc.company_id, "response": response_row.model_dump(mode="json")},
+        ttl_seconds=settings.DOCUMENT_METADATA_CACHE_TTL_SECONDS,
+    )
+    return response_row
 
 
 async def delete_document(*, document_id: str, db: AsyncSession, current_user: User) -> None:
@@ -200,6 +288,8 @@ async def delete_document(*, document_id: str, db: AsyncSession, current_user: U
             "actor": current_user.id,
         },
     )
+
+    await _invalidate_document_caches(company_id=doc.company_id, document_id=document_id)
 
     try:
         storage = get_storage()

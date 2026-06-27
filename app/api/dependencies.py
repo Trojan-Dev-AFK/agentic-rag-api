@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logger import get_logger
+from app.core.runtime_controls import token_session_cache_get, token_session_cache_set
 from app.db.models import TokenSession, User, UserRole
 from app.db.session import get_db
 
@@ -53,6 +54,10 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
         logger.warning("JWT references unknown user", extra={"username": username})
         raise credentials_exception
 
+    cached_user_id = await token_session_cache_get(jti=jti)
+    if cached_user_id == user.id:
+        return user
+
     session_result = await db.execute(
         select(TokenSession).filter(TokenSession.jti == jti, TokenSession.user_id == user.id)
     )
@@ -70,6 +75,10 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
     if token_session.expires_at < datetime.now(UTC):
         logger.warning("Attempt to use expired token", extra={"user_id": user.id, "jti": jti})
         raise credentials_exception
+
+    remaining_seconds = int((token_session.expires_at - datetime.now(UTC)).total_seconds())
+    ttl_seconds = max(1, min(settings.TOKEN_SESSION_CACHE_TTL_SECONDS, remaining_seconds))
+    await token_session_cache_set(jti=jti, user_id=user.id, ttl_seconds=ttl_seconds)
 
     return user
 

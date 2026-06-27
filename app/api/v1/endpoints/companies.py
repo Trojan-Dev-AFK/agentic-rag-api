@@ -1,6 +1,6 @@
 """Company management endpoints — Super Admin only."""
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import require_super_admin
@@ -28,11 +28,18 @@ async def create_company(
 
 @router.get("/", response_model=list[CompanyResponse])
 async def list_companies(
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int | None = Query(default=None, ge=0),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_super_admin),
 ):
     """Return all companies ordered by name (super admin only)."""
-    return await companies_service.list_companies(db=db, current_user=current_user)
+    service_kwargs: dict = {"db": db, "current_user": current_user}
+    if limit is not None:
+        service_kwargs["limit"] = limit
+    if offset is not None:
+        service_kwargs["offset"] = offset
+    return await companies_service.list_companies(**service_kwargs)
 
 
 @router.get("/{company_id}", response_model=CompanyResponse)
