@@ -25,7 +25,7 @@ Operational guide for deploying, running, monitoring, and troubleshooting the Ag
 git clone <repo>
 cd agentic-rag-api
 uv sync              # installs all runtime deps into .venv
-uv sync --group dev  # also installs ruff, black, interrogate
+uv sync --group dev  # also installs ruff, black, interrogate, pytest, vulture
 ```
 
 ### 2. Configure environment
@@ -92,12 +92,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 Remove `--reload` in production. Interactive docs are at `http://localhost:8000/docs`.
 
-Optional: pre-warm the agent after startup to avoid first-chat embedding cold-start latency:
-
-```bash
-curl -X POST http://localhost:8000/v1/chat/warmup \
-  -H "Authorization: Bearer <token>"
-```
+The API automatically performs a best-effort embedding warmup during startup to reduce
+first-chat cold-start latency.
 
 ### Celery worker
 
@@ -143,7 +139,6 @@ celery -A app.worker.celery_app control shutdown
 | `EMBEDDING_MODEL` | yes | — | HuggingFace model name |
 | `CHUNK_SIZE` | yes | — | Max chars per text chunk |
 | `CHUNK_OVERLAP` | yes | — | Overlap chars between adjacent chunks |
-| `AGENT_WARMUP_ON_STARTUP` | no | `true` | Best-effort preload of vector-search embedding model during API startup |
 | `ENCODING` | yes | — | Text encoding (use `utf-8`) |
 | `DOCUMENT_STORAGE` | no | `LOCAL` | `LOCAL` or `CLOUD_STORAGE` |
 | `LOCAL_UPLOAD_DIR` | no | `uploads` | Root dir for local file storage |
@@ -219,8 +214,7 @@ Every log line is a single JSON object:
 
 ### Agent warmup and loop guard
 
-- The API performs a best-effort startup warmup when `AGENT_WARMUP_ON_STARTUP=true`.
-- You can trigger warmup manually via `POST /v1/chat/warmup`.
+- The API performs a best-effort embedding warmup during startup.
 - The chat graph uses a recursion limit of 8 to prevent long tool-call loops.
 - The vector-search tool blocks repeated identical searches in a single request after one repeat.
 

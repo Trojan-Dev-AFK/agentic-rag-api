@@ -37,13 +37,16 @@ Three separate processes handle different concerns:
 │  Dependencies (app/api/dependencies.py)                              │
 │  └─ JWT decode → TokenSession lookup → role guard                    │
 │                                                                      │
+│  Services (app/services/)                                             │
+│  └─ auth · companies · users · documents · chat business logic       │
+│                                                                      │
 │  Storage abstraction (app/storage/)                                  │
 │  └─ LocalStorage | S3Storage  (singleton per process)                │
 │                                                                      │
 │  Agent (app/agent/)           ← chat endpoint only                  │
 │  ├─ LangGraph StateGraph (compiled once at startup)                  │
 │  ├─ ChatOllama llama3.1 (singleton)                                  │
-│  └─ Tools: search_documents · generate_graph                        │
+│  └─ Tools: search_documents                                          │
 └────────────┬──────────────────────────────────┬─────────────────────┘
              │                                  │
    Celery    │ .delay()            pgvector      │ SELECT cosine_distance
@@ -91,6 +94,7 @@ Token sessions are stored in PostgreSQL so logout is hard (no replay after revok
 ```
 POST /v1/documents/upload
   → validate admin role + company scope
+  → delegate to documents service
   → INSERT Document(status=PENDING)
   → storage.upload(file) — writes to LOCAL or S3
   → process_pdf_task.delay(doc_id, storage_ref) — enqueues in Redis
@@ -111,6 +115,7 @@ Celery worker (separate process):
 ```
 POST /v1/chat/invoke { "query": "..." }
   → validate admin/employee role (super_admin blocked)
+  → delegate to chat service
   → apply recursion limit (8 steps) and per-request duplicate-search guard
   → app_graph.ainvoke({ messages: [HumanMessage] })
 
@@ -123,12 +128,10 @@ POST /v1/chat/invoke { "query": "..." }
       search_documents(query):
         same-query repetition capped (blocks after one repeat in a request)
         embed_query → cosine_distance SELECT TOP 5 company-scoped document_chunks
-      generate_graph(data_json):
-        parse JSON → build Plotly figure spec
 
     → loop back to Agent node until no more tool calls
 
-  → return { response: "...", graph: <plotly payload | null> }
+  → return { response: "..." }
 ```
 
 ---
@@ -150,8 +153,8 @@ The Celery worker uses **lazy singletons** because `tasks.py` is imported by the
 process (to call `.delay()`). Eager loading would waste ~400 MB of model weights in the
 API process, which never runs the embedding logic.
 
-To reduce first-request latency, the API performs a best-effort warmup at startup when
-`AGENT_WARMUP_ON_STARTUP=true` by preloading the vector-search embedding model.
+To reduce first-request latency, the API performs a best-effort warmup during startup
+by preloading the vector-search embedding model.
 
 ---
 
@@ -186,14 +189,13 @@ See [README.md](../README.md) for the full schema table. Key design points:
 
 ## RBAC model
 
-Four roles define the permission hierarchy:
+Three roles define the permission hierarchy:
 
 | Role | Company Affiliation | Permissions |
 |------|-------------------|-----------|
 | `super_admin` | None (platform operator) | Full cross-company access; can create/manage companies and their first admins; cannot use chat |
 | `admin` | Single company | Can create/manage users and documents in their company; can use chat |
 | `employee` | Single company | Can use chat only; no management access |
-| `guest` (not used) | — | — |
 
 ### Data Integrity Constraints
 

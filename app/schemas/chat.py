@@ -7,8 +7,7 @@ class ChatRequest(BaseModel):
     """Natural-language query sent to the RAG agent."""
 
     query: str = Field(
-        description="The question or instruction for the agent. "
-        "The agent will search uploaded documents and optionally generate a chart.",
+        description="The question or instruction for the agent. The agent will search uploaded documents.",
         min_length=1,
     )
 
@@ -16,43 +15,14 @@ class ChatRequest(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    """Agent response containing a text answer and an optional Plotly chart."""
+    """Agent response containing a text answer."""
 
     response: str = Field(description="Agent's text answer.")
-    graph: dict | None = Field(
-        default=None,
-        description=(
-            "Plotly figure payload when the agent called `generate_graph`, otherwise `null`. "
-            "Contains `is_graph: true`, `chart_type`, and a `payload` object with `data` and `layout` keys "
-            "compatible with the Plotly.js `Plotly.newPlot()` API."
-        ),
-    )
 
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
                 "response": "Total Q3 2025 revenue was $4.2 million across all regions.",
-                "graph": None,
-            }
-        }
-    )
-
-
-class WarmupResponse(BaseModel):
-    """Response returned by the agent warmup endpoint."""
-
-    message: str = Field(description="Human-readable warmup status message.")
-    embeddings_loaded_now: bool = Field(
-        description="`true` when this call loaded the embeddings model, `false` when already warm."
-    )
-    elapsed_seconds: float = Field(description="Warmup duration in seconds.")
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "message": "Agent warmup completed",
-                "embeddings_loaded_now": False,
-                "elapsed_seconds": 0.021,
             }
         }
     )

@@ -56,7 +56,6 @@ Full setup guide: [docs/RUNBOOK.md](docs/RUNBOOK.md)
 | `GET` | `/v1/documents/` | Admin (own company) or Super Admin |
 | `GET` | `/v1/documents/{id}` | Admin (own company) or Super Admin |
 | `DELETE` | `/v1/documents/{id}` | Admin (own company) or Super Admin |
-| `POST` | `/v1/chat/warmup` | Authenticated |
 | `POST` | `/v1/chat/invoke` | Admin or Employee |
 
 ---
@@ -103,7 +102,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES=60
 EMBEDDING_MODEL=all-MiniLM-L6-v2
 CHUNK_SIZE=1000
 CHUNK_OVERLAP=200
-AGENT_WARMUP_ON_STARTUP=true
 
 # Encoding
 ENCODING=utf-8
@@ -140,10 +138,12 @@ Full variable reference: [docs/RUNBOOK.md#environment-variables-reference](docs/
 
 ```bash
 # Linting and formatting
-ruff check app/        # lint
-ruff check app/ --fix  # auto-fix
-black app/             # format
-interrogate app/       # docstring coverage (min 80%)
+uv run ruff check .                             # lint + complexity + commented-out code checks
+uv run ruff check . --fix                       # auto-fix
+uv run black --check .                          # format verification
+uv run python scripts/lint_thin_endpoints.py   # endpoint thinness rule
+uv run interrogate app/                         # docstring coverage (min 80%)
+uv run vulture app scripts --min-confidence 70 # dead-code scan
 
 # Dependencies
 uv add <package>       # add a runtime dependency
@@ -161,5 +161,5 @@ export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES  # macOS only
 celery -A app.worker.celery_app worker --pool=solo --loglevel=info
 
 # Tests
-pytest
+uv run pytest -q
 ```

@@ -8,7 +8,6 @@ from langgraph.graph import START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
-from app.agent.tools.graph_generator import generate_graph
 from app.agent.tools.vector_search import search_documents
 from app.core.logger import get_logger
 
@@ -21,7 +20,7 @@ class GraphState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
 
-tools = [search_documents, generate_graph]
+tools = [search_documents]
 tool_node = ToolNode(tools)
 
 logger.info("Initialising LLM", extra={"model": "llama3.1", "temperature": 0})
@@ -37,27 +36,13 @@ def call_model(state: GraphState):
     system_instruction = SystemMessage(
         content=(
             "You are an expert financial and healthcare data assistant. "
-            "You have two tools available:\n"
-            "1. 'search_documents' — use this to look up factual information from uploaded documents.\n"
-            "2. 'generate_graph' — use this ONLY when the user explicitly asks for a chart, graph, plot, "
-            "or visual breakdown. This tool accepts a single JSON string parameter called 'data_json'.\n\n"
+            "You have one tool available:\n"
+            "1. 'search_documents' — use this to look up factual information from uploaded documents.\n\n"
             "CRITICAL RULES:\n"
-            "- If the user asks for a chart or graph, you MUST call 'generate_graph'."
-            " Do NOT just describe data in text.\n"
-            "- Never print JSON like {\"name\": \"generate_graph\", ...} in normal text."
-            " Use real tool-calling only.\n"
-            "- First use 'search_documents' to gather the numbers if needed,"
-            " then call 'generate_graph' with the data.\n"
-            "- Only chart numbers that are explicitly present in retrieved document evidence."
-            " Never invent placeholder values.\n"
-            "- For requests like monthly revenue for a specific year, include all 12 months"
-            " if the evidence supports it; otherwise clearly state the data is incomplete.\n"
+            "- Use 'search_documents' whenever factual document evidence is needed.\n"
             "- Never call 'search_documents' repeatedly with the same query in a loop."
             " If you already called it and have results, produce a final answer.\n"
-            "- If 'generate_graph' returns an error, do NOT call it again with the same payload."
-            " Return a concise failure message asking for a clearer chart request.\n"
-            "- After calling 'generate_graph', keep your final text response brief (e.g. 'Here is your chart.'). "
-            "Do NOT re-list all the data points in your text answer — the chart already shows them."
+            "- Do not fabricate data. If evidence is missing, say so clearly."
         )
     )
 

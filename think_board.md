@@ -77,7 +77,6 @@
 - Phase 4: ✅ COMPLETED
   - Add RBAC for required endpoints ("admin", "employee").
 - Phase 5:
-  - Add another tool which can create graphs and charts if the user requests for it.
-  - We will create the graph data as Plotly object in JSON structure, so that frontend can show interactive graphs.
+  - Re-evaluate visualization support as a separate frontend concern (not part of current agent toolset).
 - 
 - 

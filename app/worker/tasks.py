@@ -55,6 +55,41 @@ def _get_text_splitter() -> RecursiveCharacterTextSplitter:
     return _text_splitter
 
 
+def _embed_and_store_chunks(*, db, document_id: str, chunks: list[str]) -> None:
+    """Embed chunk text and stage DocumentChunk rows in the transaction."""
+    embedding_model = _get_embedding_model()
+    for i, text_content in enumerate(chunks):
+        vector = embedding_model.embed_query(text_content)
+        db.add(DocumentChunk(document_id=document_id, text_content=text_content, embedding=vector))
+        if (i + 1) % 10 == 0:
+            logger.debug(
+                "Embedding progress",
+                extra={"doc_id": document_id, "embedded": i + 1, "total": len(chunks)},
+            )
+
+
+def _set_failed_status(*, db, doc: Document, document_id: str) -> None:
+    """Best-effort transition of a document to FAILED after processing errors."""
+    try:
+        db.rollback()
+        doc.status = ProcessingStatus.FAILED
+        db.commit()
+        logger.info("Status set to FAILED", extra={"doc_id": document_id})
+    except Exception as db_exc:
+        logger.critical(
+            "Failed to update document status after processing error",
+            extra={"doc_id": document_id},
+            exc_info=db_exc,
+        )
+
+
+def _cleanup_temp_file(*, local_path: str | None, storage_ref: str, document_id: str) -> None:
+    """Delete temporary local files created by storage adapters (e.g. S3 downloads)."""
+    if local_path and local_path != storage_ref and os.path.exists(local_path):
+        os.remove(local_path)
+        logger.debug("Temp file cleaned up", extra={"doc_id": document_id, "path": local_path})
+
+
 @celery_app.task(bind=True, name="process_pdf_task")
 def process_pdf_task(self, document_id: str, storage_ref: str):
     """
@@ -108,15 +143,7 @@ def process_pdf_task(self, document_id: str, storage_ref: str):
             extra={"doc_id": document_id, "chunk_count": len(chunks), "chunk_size": settings.CHUNK_SIZE},
         )
 
-        embedding_model = _get_embedding_model()
-        for i, text_content in enumerate(chunks):
-            vector = embedding_model.embed_query(text_content)
-            db.add(DocumentChunk(document_id=doc.id, text_content=text_content, embedding=vector))
-            if (i + 1) % 10 == 0:
-                logger.debug(
-                    "Embedding progress",
-                    extra={"doc_id": document_id, "embedded": i + 1, "total": len(chunks)},
-                )
+        _embed_and_store_chunks(db=db, document_id=doc.id, chunks=chunks)
 
         doc.status = ProcessingStatus.COMPLETED
         db.commit()
@@ -139,22 +166,10 @@ def process_pdf_task(self, document_id: str, storage_ref: str):
             extra={"doc_id": document_id, "storage_ref": storage_ref},
             exc_info=exc,
         )
-        try:
-            db.rollback()
-            doc.status = ProcessingStatus.FAILED
-            db.commit()
-            logger.info("Status set to FAILED", extra={"doc_id": document_id})
-        except Exception as db_exc:
-            logger.critical(
-                "Failed to update document status after processing error",
-                extra={"doc_id": document_id},
-                exc_info=db_exc,
-            )
+        _set_failed_status(db=db, doc=doc, document_id=document_id)
         return {"status": "failed", "error": str(exc)}
 
     finally:
-        # For S3: local_path is a temp download — always clean it up regardless of outcome
-        if local_path and local_path != storage_ref and os.path.exists(local_path):
-            os.remove(local_path)
-            logger.debug("Temp file cleaned up", extra={"doc_id": document_id, "path": local_path})
+        # For S3: local_path is a temp download — always clean it up regardless of outcome.
+        _cleanup_temp_file(local_path=local_path, storage_ref=storage_ref, document_id=document_id)
         db.close()

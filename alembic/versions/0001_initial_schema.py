@@ -5,9 +5,11 @@ Revises:
 Create Date: 2026-05-31
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
+from typing import Union
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0001"
@@ -72,9 +74,7 @@ def upgrade() -> None:
             PRIMARY KEY (id)
         )
     """))
-    op.execute(sa.text(
-        "CREATE UNIQUE INDEX IF NOT EXISTS ix_companies_name ON companies (name)"
-    ))
+    op.execute(sa.text("CREATE UNIQUE INDEX IF NOT EXISTS ix_companies_name ON companies (name)"))
 
     op.execute(sa.text("""
         CREATE TABLE IF NOT EXISTS users (
@@ -87,9 +87,7 @@ def upgrade() -> None:
             PRIMARY KEY (id)
         )
     """))
-    op.execute(sa.text(
-        "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username ON users (username)"
-    ))
+    op.execute(sa.text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username ON users (username)"))
 
     op.execute(sa.text("""
         CREATE TABLE IF NOT EXISTS token_sessions (
@@ -105,9 +103,7 @@ def upgrade() -> None:
             PRIMARY KEY (id)
         )
     """))
-    op.execute(sa.text(
-        "CREATE UNIQUE INDEX IF NOT EXISTS ix_token_sessions_jti ON token_sessions (jti)"
-    ))
+    op.execute(sa.text("CREATE UNIQUE INDEX IF NOT EXISTS ix_token_sessions_jti ON token_sessions (jti)"))
 
     op.execute(sa.text("""
         CREATE TABLE IF NOT EXISTS documents (

@@ -27,10 +27,16 @@ app/
 ├── main.py              # app factory, middleware, exception handlers, lifespan
 ├── api/
 │   ├── dependencies.py  # JWT decode + role guards
-│   └── v1/endpoints/    # one file per router (auth, companies, users, documents, chat)
+│   └── v1/endpoints/    # thin transport handlers only (request parsing + response mapping)
+├── services/            # business logic layer used by endpoints
+│   ├── auth_service.py
+│   ├── companies_service.py
+│   ├── users_service.py
+│   ├── documents_service.py
+│   └── chat_service.py
 ├── agent/
 │   ├── graph.py         # LangGraph StateGraph (compiled once at startup)
-│   └── tools/           # search_documents, generate_graph
+│   └── tools/           # search_documents
 ├── core/
 │   ├── config.py        # all settings (Pydantic BaseSettings)
 │   ├── logger.py        # JSON structured logging
@@ -52,17 +58,26 @@ app/
 
 ### Formatting and linting
 
-Three tools run in CI. Run them locally before pushing:
+All quality gates run in CI. Run them locally before pushing:
 
 ```bash
-ruff check app/       # lint (pycodestyle, pyflakes, isort, pyupgrade, bugbear)
-ruff check app/ --fix # auto-fix all fixable violations
-black app/            # format
-interrogate app/      # docstring coverage (minimum 80%)
+uv run ruff check .                             # lint (pycodestyle, pyflakes, isort, pyupgrade, bugbear)
+uv run ruff check . --fix                       # auto-fix all fixable violations
+uv run black --check .                          # verify formatting
+uv run python scripts/lint_thin_endpoints.py   # enforce thin endpoint imports
+uv run interrogate app/                         # docstring coverage (minimum 80%)
+uv run vulture app scripts --min-confidence 70 # dead-code scan (production code only)
 ```
 
 Configuration lives in `pyproject.toml` under `[tool.ruff]`, `[tool.black]`,
-and `[tool.interrogate]`.
+`[tool.interrogate]`, and `[tool.vulture]`.
+
+### Separation of concerns
+
+- Endpoint modules in `app/api/v1/endpoints/` must stay thin and avoid business logic.
+- Put domain/business logic in `app/services/` modules.
+- Endpoints should delegate to services and only handle HTTP-level concerns
+    (routing, dependency injection, status codes, response models).
 
 ### Line length
 
@@ -188,12 +203,14 @@ alembic current        # show active revision
 ## Testing
 
 ```bash
-pytest
+uv run pytest -q
 ```
 
-Tests live in `tests/`. The project uses a real test database (no mocking the ORM layer) to
-catch migration/schema drift. Set `DATABASE_URL_ASYNC` and `DATABASE_URL_SYNC` in `.env`
-to a dedicated test database before running the suite.
+Tests live in `tests/` and currently include:
+- Unit tests for `app/services/*` with mocked async session behavior.
+- Endpoint integration tests for role/scoping behavior using FastAPI dependency overrides.
+
+These tests do not require a dedicated test database.
 
 ---
 

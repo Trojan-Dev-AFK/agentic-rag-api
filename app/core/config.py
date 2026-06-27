@@ -54,9 +54,6 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP: int
     """Number of characters to overlap between adjacent chunks to preserve context at boundaries."""
 
-    AGENT_WARMUP_ON_STARTUP: bool = True
-    """If true, preload the vector-search embedding model during API startup (best effort)."""
-
     # ------------------------------------------------------------------
     # Encoding
     # ------------------------------------------------------------------

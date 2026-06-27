@@ -558,31 +558,11 @@ Also removes the source PDF from storage.
 
 ## Chat Endpoint (`/v1/chat`)
 
-### `POST /v1/chat/warmup`
-
-**Access:** Authenticated users (`super_admin`, `admin`, `employee`)
-
-Preload the vector-search embedding model so the next chat invocation avoids first-request cold-start latency.
-
-**Response (200 OK):**
-```json
-{
-  "message": "Agent warmup completed",
-  "embeddings_loaded_now": false,
-  "elapsed_seconds": 0.021
-}
-```
-
-**Notes:**
-- `embeddings_loaded_now=true` means this request performed the initial model load.
-- `embeddings_loaded_now=false` means the model was already warm.
-
 ### `POST /v1/chat/invoke`
 
 **Access:** `admin` and `employee` (company users only); `super_admin` blocked
 
-Invoke the agent with a natural language query. Returns a conversational response and 
-optionally a Plotly graph specification if the agent generated one.
+Invoke the agent with a natural language query. Returns a grounded conversational response.
 
 **Safeguards:**
 - LangGraph recursion limit is capped at `8` per request.
@@ -598,39 +578,13 @@ optionally a Plotly graph specification if the agent generated one.
 **Response (200 OK):**
 ```json
 {
-  "response": "Based on the analyzed contracts, the key terms include...",
-  "graph": {
-    "is_graph": true,
-    "payload": {
-      "data": [
-        {
-          "x": ["Jan", "Feb", "Mar"],
-          "y": [10, 15, 12],
-          "type": "bar",
-          "name": "Metric A"
-        }
-      ],
-      "layout": {
-        "title": "Contract Analysis Summary",
-        "xaxis": {"title": "Month"},
-        "yaxis": {"title": "Count"}
-      }
-    }
-  }
-}
-```
-
-Or, if no graph was generated:
-
-```json
-{
-  "response": "...",
-  "graph": null
+  "response": "Based on the analyzed contracts, the key terms include..."
 }
 ```
 
 **Errors:**
-- `500 Internal Server Error` — agent orchestration failed (LLM timeout, database error, etc.)
+- `502 Bad Gateway` — agent orchestration failed (LLM/tool failure surfaced as `AgentError`)
+- `500 Internal Server Error` — unexpected unhandled server error
 
 ---
 

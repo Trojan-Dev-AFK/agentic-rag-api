@@ -3,7 +3,7 @@
 import enum
 import uuid
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, String, func, CheckConstraint
+from sqlalchemy import CheckConstraint, Column, DateTime, Enum, ForeignKey, String, func
 from sqlalchemy.orm import relationship
 
 from app.db.models.base import Base
@@ -33,7 +33,7 @@ class User(Base):
     Cascade rules:
     - Deleting a user cascades to all their token sessions.
     - Deleting the parent company sets ``company_id`` to NULL (SET NULL).
-    
+
     Constraints:
     - super_admin users must have company_id = NULL
     - admin and employee users must have company_id != NULL
@@ -53,7 +53,10 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
-        CheckConstraint("(role = 'super_admin' AND company_id IS NULL) OR (role != 'super_admin' AND company_id IS NOT NULL)", name="check_super_admin_no_company"),
+        CheckConstraint(
+            "(role = 'super_admin' AND company_id IS NULL) OR (role != 'super_admin' AND company_id IS NOT NULL)",
+            name="check_super_admin_no_company",
+        ),
     )
 
     company = relationship("Company", back_populates="users")

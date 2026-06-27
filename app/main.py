@@ -81,20 +81,19 @@ async def lifespan(app: FastAPI):
         logger.critical("Database connectivity check failed", exc_info=exc)
         raise
 
-    if settings.AGENT_WARMUP_ON_STARTUP:
-        try:
-            from app.agent.tools.vector_search import warmup_vector_search
+    try:
+        from app.agent.tools.vector_search import warmup_vector_search
 
-            warmed_now = await asyncio.to_thread(warmup_vector_search)
-            logger.info(
-                "Agent warmup completed",
-                extra={"embeddings_loaded_now": warmed_now},
-            )
-        except Exception as exc:
-            logger.warning(
-                "Agent warmup failed — continuing without warm cache",
-                exc_info=exc,
-            )
+        warmed_now = await asyncio.to_thread(warmup_vector_search)
+        logger.info(
+            "Agent warmup completed",
+            extra={"embeddings_loaded_now": warmed_now},
+        )
+    except Exception as exc:
+        logger.warning(
+            "Agent warmup failed — continuing without warm cache",
+            exc_info=exc,
+        )
 
     yield
 
@@ -133,7 +132,7 @@ _TAGS_METADATA = [
         "name": "Documents",
         "description": (
             "Upload PDFs for RAG ingestion and track processing status. "
-            "**Restricted to company `admin` accounts.** "
+            "Accessible by **`super_admin`** (any company) and **`admin`** (own company only). "
             "After upload the file is stored (local or S3) and processed asynchronously by a Celery worker "
             "which splits the text into chunks, embeds each chunk with `all-MiniLM-L6-v2`, "
             "and stores the vectors in PostgreSQL via pgvector."
@@ -144,8 +143,7 @@ _TAGS_METADATA = [
         "description": (
             "Conversational RAG interface powered by LangGraph + Ollama (`llama3.1`). "
             "Available to **`admin` and `employee`** accounts. `super_admin` is blocked. "
-            "The agent can call two tools: `search_documents` (pgvector cosine search) "
-            "and `generate_graph` (Plotly chart builder)."
+            "The agent can call `search_documents` (pgvector cosine search) to ground responses in uploaded documents."
         ),
     },
 ]

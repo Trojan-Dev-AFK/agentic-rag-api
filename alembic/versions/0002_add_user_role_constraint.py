@@ -5,9 +5,11 @@ Revises: 0001
 Create Date: 2026-05-31
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
+from typing import Union
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0002"
