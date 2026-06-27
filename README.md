@@ -1,7 +1,8 @@
 # Agentic RAG API
 
 A multi-tenant REST API that lets companies upload PDF documents and interrogate them
-through a conversational AI agent. Each company's data is fully isolated.
+through a conversational AI agent. Each company's data is fully isolated, and chat
+conversation history is persisted per user.
 
 ---
 
@@ -57,6 +58,8 @@ Full setup guide: [docs/RUNBOOK.md](docs/RUNBOOK.md)
 | `GET` | `/v1/documents/{id}` | Admin (own company) or Super Admin |
 | `DELETE` | `/v1/documents/{id}` | Admin (own company) or Super Admin |
 | `POST` | `/v1/chat/invoke` | Admin or Employee |
+| `GET` | `/v1/chat/conversations` | Admin or Employee |
+| `GET` | `/v1/chat/conversations/{conversation_id}/messages` | Admin or Employee |
 
 ---
 
@@ -70,6 +73,8 @@ Full setup guide: [docs/RUNBOOK.md](docs/RUNBOOK.md)
 | Migrations | Alembic |
 | Database | PostgreSQL 16 + pgvector |
 | Vector search | pgvector cosine distance |
+| PDF extraction | pypdf + pdfplumber (table-aware extraction) |
+| OCR fallback | rapidocr-onnxruntime + pypdfium2 (for image/scanned pages) |
 | Embeddings | `sentence-transformers` (`all-MiniLM-L6-v2`, 384-dim) |
 | LLM | Ollama (`llama3.1`) via `langchain-ollama` |
 | Agent framework | LangGraph |
@@ -128,9 +133,12 @@ Full variable reference: [docs/RUNBOOK.md#environment-variables-reference](docs/
 
 | Document | Contents |
 |----------|----------|
+| [docs/API_DOCS.md](docs/API_DOCS.md) | Endpoint-level request/response reference with role-based access notes |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component diagram, request lifecycle, singleton model loading, storage backend design, RBAC model |
+| [docs/ENDPOINT_ACCESS_MATRIX.md](docs/ENDPOINT_ACCESS_MATRIX.md) | Quick role/access lookup for all endpoints |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Full setup, service startup/shutdown, migrations, monitoring, common ops tasks, S3 setup, backup/restore |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Code standards, docstring style, singleton pattern, adding endpoints, migrations, logging conventions |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | Historical record of architecture, ingestion, RBAC, CI, and chat-history milestones |
 
 ---
 

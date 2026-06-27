@@ -1,13 +1,19 @@
 """Unit tests for documents service business logic."""
 
 import asyncio
+from io import BytesIO
 
 import pytest
 from fastapi import HTTPException
+from starlette.datastructures import UploadFile
 
 from app.db.models import Document, ProcessingStatus, UserRole
 from app.services import documents_service
 from tests.helpers import make_user, scalar_result
+
+
+def _pdf_upload_file() -> UploadFile:
+    return UploadFile(filename="a.pdf", file=BytesIO(b"%PDF-1.7\n%test"), headers={"content-type": "application/pdf"})
 
 
 def test_upload_document_super_admin_missing_company_raises_400(mock_db):
@@ -16,7 +22,7 @@ def test_upload_document_super_admin_missing_company_raises_400(mock_db):
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(
             documents_service.upload_document(
-                file=type("F", (), {"filename": "a.pdf", "content_type": "application/pdf"})(),
+                file=_pdf_upload_file(),
                 company_id=None,
                 db=mock_db,
                 current_user=super_admin,
@@ -45,3 +51,39 @@ def test_delete_document_not_found_raises_404(mock_db):
         asyncio.run(documents_service.delete_document(document_id="d-x", db=mock_db, current_user=admin))
 
     assert exc_info.value.status_code == 404
+
+
+def test_upload_document_rejects_non_pdf_extension(mock_db):
+    admin = make_user(role=UserRole.ADMIN, company_id="c-1", user_id="a-1")
+    file = UploadFile(filename="a.txt", file=BytesIO(b"hello"), headers={"content-type": "text/plain"})
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            documents_service.upload_document(
+                file=file,
+                company_id=None,
+                db=mock_db,
+                current_user=admin,
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "Only PDF files" in exc_info.value.detail
+
+
+def test_upload_document_rejects_invalid_pdf_signature(mock_db):
+    admin = make_user(role=UserRole.ADMIN, company_id="c-1", user_id="a-1")
+    file = UploadFile(filename="a.pdf", file=BytesIO(b"NOTPDF"), headers={"content-type": "application/pdf"})
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            documents_service.upload_document(
+                file=file,
+                company_id=None,
+                db=mock_db,
+                current_user=admin,
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "not a valid PDF" in exc_info.value.detail

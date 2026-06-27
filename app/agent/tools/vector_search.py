@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.logger import get_logger
-from app.db.models import Document, DocumentChunk
+from app.db.models import ChunkType, Document, DocumentChunk
 from app.db.session import AsyncSessionLocal
 
 logger = get_logger(__name__)
@@ -103,14 +103,14 @@ async def search_documents(query: str) -> str:
     try:
         async with AsyncSessionLocal() as db:
             stmt = (
-                select(DocumentChunk.text_content)
+                select(DocumentChunk.text_content, DocumentChunk.chunk_type)
                 .join(Document, Document.id == DocumentChunk.document_id)
                 .where(Document.company_id == company_id)
                 .order_by(DocumentChunk.embedding.cosine_distance(query_vector))
                 .limit(5)
             )
             result = await db.execute(stmt)
-            chunks = result.scalars().all()
+            chunks = result.all()
     except SQLAlchemyError as exc:
         logger.error("Vector search database query failed", exc_info=exc)
         return "Search is temporarily unavailable due to a database error."
@@ -120,4 +120,12 @@ async def search_documents(query: str) -> str:
         return "No relevant information found in the documents."
 
     logger.info("Vector search completed", extra={"results": len(chunks), "company_id": company_id})
-    return "\n\n---\n\n".join(chunks)
+    formatted_chunks = [
+        (
+            f"[TABLE]\n{text}"
+            if chunk_type == ChunkType.TABLE
+            else f"[OCR]\n{text}" if chunk_type == ChunkType.OCR else text
+        )
+        for text, chunk_type in chunks
+    ]
+    return "\n\n---\n\n".join(formatted_chunks)

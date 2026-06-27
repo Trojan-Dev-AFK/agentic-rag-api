@@ -32,7 +32,15 @@ logger = get_logger(__name__)
 if settings.DOCUMENT_STORAGE == "LOCAL":
     os.makedirs(settings.LOCAL_UPLOAD_DIR, exist_ok=True)
 
-_REQUIRED_TABLES = {"companies", "users", "token_sessions", "documents", "document_chunks"}
+_REQUIRED_TABLES = {
+    "companies",
+    "users",
+    "token_sessions",
+    "documents",
+    "document_chunks",
+    "chat_conversations",
+    "chat_messages",
+}
 
 
 class _RequestIDMiddleware(BaseHTTPMiddleware):

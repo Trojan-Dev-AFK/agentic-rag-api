@@ -1,251 +1,129 @@
-# Changelog: Enterprise Auth & Multi-Tenant RBAC
+# Changelog
 
-## Summary of Changes
+Project history up to 2026-06-27.
 
-This document tracks all changes made to implement a secure, enterprise-grade multi-tenant 
-RBAC system with super_admin support.
+## 2026-06-27
 
----
+### Added
 
-## 1. Database Schema Updates
+- Persisted chat history support.
+- New database tables:
+  - `chat_conversations`
+  - `chat_messages`
+- New enum type: `chatmessagerole` (`user`, `assistant`).
+- New chat endpoints:
+  - `GET /v1/chat/conversations`
+  - `GET /v1/chat/conversations/{conversation_id}/messages`
+- Conversation-aware chat invoke:
+  - `POST /v1/chat/invoke` now accepts optional `conversation_id`.
+  - Response now includes `conversation_id`.
 
-### User Model (`app/db/models/user.py`)
+### Changed
 
-**Added:**
-- `CheckConstraint` to enforce data integrity:
-  ```
-  (role = 'super_admin' AND company_id IS NULL) 
-  OR 
-  (role != 'super_admin' AND company_id IS NOT NULL)
-  ```
+- Chat service now:
+  - Creates a new conversation when `conversation_id` is absent.
+  - Validates user/company ownership when `conversation_id` is provided.
+  - Loads prior turns into graph input context.
+  - Persists both user and assistant turns for every invoke.
+- Startup schema verification now requires chat history tables.
 
-**Effect:** Database prevents invalid user/company combinations at the table level.
+### Database
 
----
+- Added migration `0005_add_chat_history_tables.py`.
+- Applied migration path now includes `0001 -> 0005`.
 
-## 2. API Endpoint Changes
+### Testing
 
-### Auth Endpoints (`/v1/auth`)
-
-| Endpoint | Change | Details |
-|----------|--------|---------|
-| `POST /v1/auth/login` | Unchanged | Public login; returns JWT with `jti` |
-| `POST /v1/auth/logout` | Unchanged | Authenticated; revokes `TokenSession` |
-| `GET /v1/auth/me` | Unchanged | Authenticated; returns user profile |
-| `GET /v1/auth/me/sessions` | **Moved from `/v1/users`** | Lists current user's sessions |
-| `GET /v1/auth/sessions/company` | Unchanged | Lists company's sessions (admin + super_admin) |
-
-### User Endpoints (`/v1/users`)
-
-| Endpoint | Before | After | Notes |
-|----------|--------|-------|-------|
-| `POST /v1/users/` | `admin` only | `admin` + `super_admin` | super_admin can create in any company |
-| `GET /v1/users/` | `admin` only | `admin` + `super_admin` | super_admin can filter by company_id |
-| `GET /v1/users/{id}` | `admin` only | `admin` + `super_admin` | super_admin can access any user |
-| `PUT /v1/users/{id}` | `admin` only | `admin` + `super_admin` | super_admin can move users between companies |
-| `DELETE /v1/users/{id}` | `admin` only | `admin` + `super_admin` | super_admin can delete any user |
-
-**Removed:**
-- Public `/v1/users/register` endpoint (admin-controlled only)
-
-### Document Endpoints (`/v1/documents`)
-
-| Endpoint | Before | After | Notes |
-|----------|--------|-------|-------|
-| `POST /v1/documents/upload` | `require_admin` | `require_admin_or_super_admin` | super_admin can upload for any company via `?company_id=` |
-| `GET /v1/documents/` | `require_admin` | `require_admin_or_super_admin` | super_admin can filter by company_id |
-| `GET /v1/documents/{id}` | `require_admin` | `require_admin_or_super_admin` | super_admin can access any document |
-| `DELETE /v1/documents/{id}` | `require_admin` | `require_admin_or_super_admin` | super_admin can delete any document |
-
-### Company Endpoints (`/v1/companies`)
-
-| Endpoint | Before | After | Notes |
-|----------|--------|-------|-------|
-| `POST /v1/companies/` | `require_super_admin` | Unchanged | super_admin only |
-| `GET /v1/companies/` | `require_super_admin` | Unchanged | super_admin only |
-| `GET /v1/companies/{id}` | `require_super_admin` | Unchanged | super_admin only |
-| `PUT /v1/companies/{id}` | `require_super_admin` | Unchanged | super_admin only |
-| `DELETE /v1/companies/{id}` | `require_super_admin` | Unchanged | super_admin only |
-
-### Chat Endpoint
-
-| Endpoint | Before | After | Notes |
-|----------|--------|-------|-------|
-| `POST /v1/chat/invoke` | Allows `admin` + `employee` | Unchanged (blocks `super_admin`) | super_admin cannot query documents |
+- Added/updated unit and integration tests for conversation persistence and retrieval.
 
 ---
 
-## 3. Dependency Injection Updates
+## 2026-06-27 (Earlier)
 
-### `app/api/dependencies.py`
+### Added
 
-**Existing Guards:**
-- `get_current_user()` — decodes JWT, validates TokenSession, returns User
-- `require_admin()` — requires `role == admin` with valid `company_id`
-- `require_super_admin()` — requires `role == super_admin`
-- `require_company_user()` — allows `admin` or `employee` (blocks `super_admin`)
+- OCR-aware ingestion support for scanned/image-based PDFs.
+- New `ChunkType` value: `OCR`.
+- New migration `0004_add_ocr_chunk_type.py`.
+- New runtime dependencies:
+  - `rapidocr-onnxruntime`
+  - `pypdfium2`
 
-**Used By:**
-- Auth endpoints → `get_current_user`
-- User/Document endpoints → `require_admin_or_super_admin`
-- Company endpoints → `require_super_admin`
-- Chat endpoint → `require_company_user` (blocks super_admin)
+### Changed
 
----
+- Worker ingestion pipeline now uses layered extraction:
+  1. `pdfplumber` text extraction
+  2. `pdfplumber` table extraction
+  3. OCR fallback (RapidOCR on pypdfium2-rendered pages lacking extractable text/table content)
+  4. Final text fallback via `pypdf`
+- Chunk persistence now stores provenance in `document_chunks.chunk_type` as:
+  - `TEXT`
+  - `TABLE`
+  - `OCR`
+- Vector search formatting now annotates retrieval context with chunk-source labels:
+  - `[TABLE]`
+  - `[OCR]`
 
-## 4. Router Registration
+### Observability
 
-### `app/main.py`
-
-**Before:**
-```python
-app.include_router(chat.router, prefix="/v1/chat", tags=["Agent"])
-app.include_router(documents.router, prefix="/v1/documents", tags=["Documents"])
-app.include_router(companies.router, prefix="/v1/companies", tags=["Companies"])
-app.include_router(users.router, prefix="/v1/users", tags=["Users"])
-```
-
-**After:**
-```python
-app.include_router(auth.router, prefix="/v1/auth", tags=["Auth"])
-app.include_router(chat.router, prefix="/v1/chat", tags=["Agent"])
-app.include_router(documents.router, prefix="/v1/documents", tags=["Documents"])
-app.include_router(companies.router, prefix="/v1/companies", tags=["Companies"])
-app.include_router(users.router, prefix="/v1/users", tags=["Users"])
-```
-
-**Change:** Re-added `/v1/auth` router (was consolidated into `/v1/users`; now split again for clarity).
+- Added extraction/chunk metrics for text, table, and OCR outputs.
 
 ---
 
-## 5. Request Logging
+## 2026-06-27 (RBAC + Service Layer + Quality Hardening)
 
-All protected endpoints now log:
-- Actor (current_user.id, role)
-- Action (what was created/updated/deleted)
-- Target (resource IDs, company_id)
-- Outcome (success/denial reason)
+### Added
 
-Example:
-```python
-logger.info(
-    "User created",
-    extra={
-        "user_id": new_user.id,
-        "username": new_user.username,
-        "role": str(new_user.role),
-        "company_id": new_user.company_id,
-        "actor": current_user.id,
-        "actor_role": str(current_user.role),
-    },
-)
-```
+- Service-layer architecture for endpoint business logic:
+  - `auth_service`
+  - `users_service`
+  - `companies_service`
+  - `documents_service`
+  - `chat_service`
+- Thin-endpoint lint rule:
+  - `scripts/lint_thin_endpoints.py`
+- Expanded automated quality gates:
+  - Ruff (including complexity and commented-code checks)
+  - Black check
+  - Interrogate
+  - Vulture
+  - Thin-endpoint lint
+  - Pytest
+- Unit test suite for services.
+- Integration tests for role/scoping behavior across key endpoints.
 
----
+### Changed
 
-## 6. Documentation
+- API endpoints refactored to thin transport controllers delegating to services.
+- Startup warmup moved to application startup path.
+- Node 20 GitHub Actions references updated to current action versions.
+- CI test bootstrap improved by setting required environment defaults before app import.
 
-**New Files:**
-- `docs/API_DOCS.md` — Complete endpoint reference with examples
-- `docs/ENDPOINT_ACCESS_MATRIX.md` — Quick reference for access rules
-- `docs/CHANGELOG.md` — This file
+### Fixed
 
-**Updated:**
-- `docs/ARCHITECTURE.md` — Added RBAC model, onboarding workflow, data integrity constraints
-
----
-
-## 7. Onboarding Workflow (Updated)
-
-**Before:** No way to create the first admin (chicken-and-egg problem).
-
-**After:**
-1. `super_admin` (bootstrap script only) creates company
-2. `super_admin` creates first company admin
-3. Company admin creates employees
-4. Employees use chat
-
-**Bootstrap Super Admin:**
-```bash
-python scripts/create_superadmin.py --username superadmin --password secure
-```
+- Document deletion logging crash from reserved LogRecord key collision (`filename` in logger `extra`).
+  - Renamed key to `document_filename`.
 
 ---
 
-## 8. Key Design Decisions
+## 2026-06-27 (Graph Simplification)
 
-### Why Super Admin Has No Company
+### Removed
 
-- **Separation of Concerns:** Platform operator ≠ customer operator
-- **Simplicity:** Avoids dual-role scenarios (super_admin managing their "own" company)
-- **Security:** Explicit boundary between platform and customer namespaces
-- **Database Integrity:** CHECK constraint enforces this at the table level
+- Graph generation feature and all fallbacks/reference paths.
+- Warmup endpoint in favor of startup warmup.
 
-### Why No Public Registration
+### Kept
 
-- **Enterprise Model:** Companies are invited/onboarded by platform
-- **Security:** Prevents account enumeration or unauthorized access
-- **Auditability:** Every account creation is traceable to an admin
-
-### Why JWT Sessions are Tracked in DB
-
-- **Hard Logout:** Revoke without waiting for expiry
-- **Audit Trail:** Know exactly when users logged in/out
-- **Revocation:** Immediate across all processes (no cache issues)
-- **Session Limits:** Future: limit active sessions per user
-
-### Why Super Admin is Blocked from Chat
-
-- **Data Segmentation:** Super admin shouldn't need to read customer data
-- **Audit Clarity:** All document access is scoped to company users
-- **Compliance:** Easier to implement data residency/compliance rules
+- Document-semantic search tool (`search_documents`) as the chat grounding mechanism.
 
 ---
 
-## 9. Testing Checklist
+## Notes
 
-- [ ] `super_admin` can create company
-- [ ] `super_admin` can create admin in any company
-- [ ] `super_admin` cannot create another `super_admin` via API
-- [ ] `admin` can create employees in own company only
-- [ ] `admin` cannot create users in other companies (403)
-- [ ] `employee` cannot access user/document CRUD (403)
-- [ ] `super_admin` blocked from chat (403)
-- [ ] Cross-company access always returns 403 (never empty)
-- [ ] Logout revokes token immediately
-- [ ] Token replay after logout is rejected
-- [ ] Deleted company cascades to delete users/sessions
-- [ ] CHECK constraint enforced by database
-
----
-
-## 10. Migration Notes
-
-If upgrading from a previous version:
-
-1. **Database:** Run Alembic migration to add CHECK constraint
-2. **Routing:** Re-import `auth` router in `app/main.py`
-3. **Environment:** Ensure `SECRET_KEY`, `ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES` are set
-4. **Bootstrap:** Run `scripts/create_superadmin.py` to create platform operator
-
----
-
-## 11. Security Audit
-
-**✅ Implemented:**
-- JWT signature validation
-- TokenSession hard revocation
-- Role-based access control (RBAC)
-- Company scoping with 403 on cross-company access
-- Database-level constraints
-- Audit logging on sensitive operations
-- No public registration
-
-**🔲 Future:**
-- Rate limiting (login attempts, API calls)
-- IP address tracking in TokenSession
-- User agent tracking for suspicious changes
-- Suspicious login alerting
-- Session limits per user
-- MFA for super_admin
-- API key authentication for service accounts
+- Current role model remains:
+  - `super_admin`: platform operations only (no chat)
+  - `admin`: company-scoped management + chat
+  - `employee`: company-scoped chat
+- Cross-company access remains explicit `403` behavior.
+- Token sessions remain DB-backed for hard logout/revocation semantics.

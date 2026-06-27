@@ -217,6 +217,7 @@ Every log line is a single JSON object:
 - The API performs a best-effort embedding warmup during startup.
 - The chat graph uses a recursion limit of 8 to prevent long tool-call loops.
 - The vector-search tool blocks repeated identical searches in a single request after one repeat.
+- Chat conversations and messages are persisted in `chat_conversations` and `chat_messages`.
 
 ### Log level
 
@@ -231,7 +232,7 @@ Set `LOG_LEVEL=DEBUG` in `.env` to enable:
 
 ### Create the first super_admin
 
-There is no registration endpoint. Use the bootstrap script:
+  "file_name": "report.pdf",
 
 ```bash
 uv run python scripts/create_superadmin.py --username superadmin --password <secure-password>

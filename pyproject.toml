@@ -36,6 +36,9 @@ dependencies = [
 
     # Document processing
     "pypdf>=6.12",
+    "pdfplumber>=0.11",
+    "rapidocr-onnxruntime>=1.4",
+    "pypdfium2>=5.0",
 
     # Cloud storage
     "boto3>=1.38",

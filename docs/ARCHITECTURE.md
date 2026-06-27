@@ -56,6 +56,7 @@ Three separate processes handle different concerns:
 │  (broker+backend)  │         │                                        │
 └────────────┬───────┘         │  companies / users / token_sessions   │
              │                 │  documents / document_chunks (384-dim)│
+             │                 │  chat_conversations / chat_messages    │
              ▼                 └────────────────────────────────────────┘
 ┌────────────────────┐                    ▲
 │  Celery Worker     │                    │ INSERT chunks
@@ -102,10 +103,12 @@ POST /v1/documents/upload
 
 Celery worker (separate process):
   → get_local_path(storage_ref) — S3: download to /tmp; LOCAL: noop
-  → PdfReader → full text extraction
-  → split text into overlapping chunks (CHUNK_SIZE / CHUNK_OVERLAP)
+  → pdfplumber extraction for free text + table rows
+  → OCR fallback (RapidOCR via pypdfium2-rendered page images) for pages with no extractable text
+  → pypdf fallback text extraction as final fallback
+  → split text/table blocks into overlapping chunks (CHUNK_SIZE / CHUNK_OVERLAP)
   → for each chunk: embed_query → 384-dim float vector
-  → bulk INSERT DocumentChunk rows
+  → bulk INSERT DocumentChunk rows with chunk_type = TEXT | TABLE | OCR
   → UPDATE Document status=COMPLETED
   → storage.delete(storage_ref)
 ```
@@ -113,11 +116,13 @@ Celery worker (separate process):
 ### 3. Agent chat
 
 ```
-POST /v1/chat/invoke { "query": "..." }
+POST /v1/chat/invoke { "query": "...", "conversation_id": optional }
   → validate admin/employee role (super_admin blocked)
   → delegate to chat service
+  → load existing messages when conversation_id is provided (user/company scoped)
+  → create new conversation when conversation_id is omitted
   → apply recursion limit (8 steps) and per-request duplicate-search guard
-  → app_graph.ainvoke({ messages: [HumanMessage] })
+  → app_graph.ainvoke({ messages: [history..., HumanMessage] })
 
   LangGraph loop:
     Agent node (ChatOllama):
@@ -131,7 +136,16 @@ POST /v1/chat/invoke { "query": "..." }
 
     → loop back to Agent node until no more tool calls
 
-  → return { response: "..." }
+  → persist USER and ASSISTANT turns in chat_messages
+  → update chat_conversations.updated_at
+  → return { response: "...", conversation_id: "..." }
+
+GET /v1/chat/conversations
+  → list conversations for current user ordered by updated_at desc
+
+GET /v1/chat/conversations/{conversation_id}/messages
+  → verify conversation ownership (user + company)
+  → return ordered message history
 ```
 
 ---
@@ -183,6 +197,7 @@ See [README.md](../README.md) for the full schema table. Key design points:
 - `TIMESTAMPTZ` everywhere; UTC only.
 - pgvector `Vector(384)` column on `document_chunks` for cosine distance search.
 - Cascade deletes are enforced at the DB level: company → users → sessions, company → documents → chunks.
+- Cascade deletes are enforced for chat history too: company/user → chat_conversations → chat_messages.
 - `users.company_id` uses `SET NULL` at the FK level, but company deletion in the API path removes child users via ORM cascade.
 
 ---

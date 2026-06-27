@@ -1,5 +1,6 @@
 """Document and DocumentChunk ORM models."""
 
+import enum
 import uuid
 
 from pgvector.sqlalchemy import Vector
@@ -7,6 +8,14 @@ from sqlalchemy import Column, DateTime, Enum, ForeignKey, String, func
 from sqlalchemy.orm import relationship
 
 from app.db.models.base import Base, ProcessingStatus
+
+
+class ChunkType(str, enum.Enum):
+    """Semantic class of an ingested document chunk."""
+
+    TEXT = "TEXT"
+    TABLE = "TABLE"
+    OCR = "OCR"
 
 
 class Document(Base):
@@ -50,6 +59,11 @@ class DocumentChunk(Base):
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     document_id = Column(String, ForeignKey("documents.id", ondelete="CASCADE"))
+    chunk_type = Column(
+        Enum(ChunkType, values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
+        default=ChunkType.TEXT,
+    )
     text_content = Column(String, nullable=False)
     embedding = Column(Vector(384))
 

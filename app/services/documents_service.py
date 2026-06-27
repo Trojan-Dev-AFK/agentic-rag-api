@@ -14,6 +14,22 @@ from app.worker.tasks import process_pdf_task
 logger = get_logger(__name__)
 
 
+async def _assert_pdf_upload(file: UploadFile) -> None:
+    """Validate that the uploaded payload is a PDF by extension and file signature."""
+    filename = (file.filename or "").strip()
+    if not filename:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file must have a filename")
+
+    # Prefer strict extension checks so users receive immediate feedback.
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only PDF files are supported")
+
+    header = await file.read(5)
+    await file.seek(0)
+    if header != b"%PDF-":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is not a valid PDF")
+
+
 def _to_document_response(document: Document) -> DocumentResponse:
     """Map ORM document model to API response object."""
     return DocumentResponse(
@@ -32,6 +48,8 @@ async def upload_document(
     current_user: User,
 ) -> UploadResponse:
     """Create document record, upload file to storage, and enqueue processing task."""
+    await _assert_pdf_upload(file)
+
     if current_user.role == UserRole.ADMIN:
         target_company_id = current_user.company_id
     else:
@@ -175,7 +193,12 @@ async def delete_document(*, document_id: str, db: AsyncSession, current_user: U
     await db.commit()
     logger.warning(
         "Document deleted (cascades vector chunks)",
-        extra={"doc_id": document_id, "filename": doc.filename, "company_id": doc.company_id, "actor": current_user.id},
+        extra={
+            "doc_id": document_id,
+            "document_filename": doc.filename,
+            "company_id": doc.company_id,
+            "actor": current_user.id,
+        },
     )
 
     try:

@@ -31,6 +31,8 @@ Quick reference for all API endpoints and their access rules.
 | `/v1/documents/{id}` | DELETE | ❌ | ❌ | ✅* | ✅ | Delete document; * own company only |
 | **Chat** |
 | `/v1/chat/invoke` | POST | ❌ | ✅ | ✅ | ❌ | Query agent; super_admin blocked |
+| `/v1/chat/conversations` | GET | ❌ | ✅ | ✅ | ❌ | List own persisted conversations |
+| `/v1/chat/conversations/{conversation_id}/messages` | GET | ❌ | ✅ | ✅ | ❌ | List messages for own conversation |
 
 **Legend:**
 - ✅ = full access
@@ -92,7 +94,9 @@ Employees and admins only (super_admin explicitly blocked).
 
 | Endpoint | Super Admin | Admin | Employee | Notes |
 |----------|-------------|-------|----------|-------|
-| `POST /v1/chat/invoke` | ❌ 403 | ✅ | ✅ | Searches vectors scoped to company |
+| `POST /v1/chat/invoke` | ❌ 403 | ✅ | ✅ | Can start a new conversation or continue an existing one via `conversation_id` |
+| `GET /v1/chat/conversations` | ❌ 403 | ✅ | ✅ | Lists conversations for the authenticated user only |
+| `GET /v1/chat/conversations/{conversation_id}/messages` | ❌ 403 | ✅ | ✅ | Returns history only when the conversation belongs to the authenticated user/company |
 
 ---
 

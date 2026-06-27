@@ -530,10 +530,10 @@ Retrieve a specific document's status and metadata.
 ```
 
 **Document Statuses:**
-- `pending` — queued for processing
-- `processing` — Celery worker is chunking/embedding
-- `completed` — chunks stored in `document_chunks` table
-- `failed` — error during processing
+- `PENDING` — queued for processing
+- `PROCESSING` — Celery worker is chunking/embedding
+- `COMPLETED` — chunks stored in `document_chunks` table
+- `FAILED` — error during processing
 
 **Errors:**
 - `404 Not Found` — document does not exist
@@ -571,16 +571,74 @@ Invoke the agent with a natural language query. Returns a grounded conversationa
 **Request:**
 ```json
 {
-  "query": "What are the key terms in our contracts?"
+  "query": "What are the key terms in our contracts?",
+  "conversation_id": "optional-existing-conversation-uuid"
 }
 ```
 
 **Response (200 OK):**
 ```json
 {
-  "response": "Based on the analyzed contracts, the key terms include..."
+  "response": "Based on the analyzed contracts, the key terms include...",
+  "conversation_id": "conversation-uuid-123"
 }
 ```
+
+**Notes:**
+- Omit `conversation_id` to create a new persisted conversation.
+- Provide `conversation_id` to continue an existing conversation.
+- Conversation access is user-scoped and company-scoped.
+
+---
+
+### `GET /v1/chat/conversations`
+
+**Access:** `admin` and `employee` (company users only); `super_admin` blocked
+
+List persisted conversations owned by the authenticated user.
+
+**Response (200 OK):**
+```json
+[
+  {
+    "id": "conversation-uuid-123",
+    "title": "What are the key terms in our contracts?",
+    "created_at": "27:06:2026 10:15:00.123",
+    "updated_at": "27:06:2026 10:17:42.100"
+  }
+]
+```
+
+---
+
+### `GET /v1/chat/conversations/{conversation_id}/messages`
+
+**Access:** `admin` and `employee` (company users only); `super_admin` blocked
+
+Return persisted messages for one conversation owned by the authenticated user.
+
+**Response (200 OK):**
+```json
+[
+  {
+    "id": "message-uuid-1",
+    "conversation_id": "conversation-uuid-123",
+    "role": "user",
+    "content": "What are the key terms in our contracts?",
+    "created_at": "27:06:2026 10:15:00.123"
+  },
+  {
+    "id": "message-uuid-2",
+    "conversation_id": "conversation-uuid-123",
+    "role": "assistant",
+    "content": "Based on the analyzed contracts, the key terms include...",
+    "created_at": "27:06:2026 10:15:02.512"
+  }
+]
+```
+
+**Errors:**
+- `404 Not Found` — conversation does not exist or does not belong to the authenticated user
 
 **Errors:**
 - `502 Bad Gateway` — agent orchestration failed (LLM/tool failure surfaced as `AgentError`)
