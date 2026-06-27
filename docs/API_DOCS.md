@@ -623,15 +623,8 @@ Return persisted messages for one conversation owned by the authenticated user.
   {
     "id": "message-uuid-1",
     "conversation_id": "conversation-uuid-123",
-    "role": "user",
-    "content": "What are the key terms in our contracts?",
-    "created_at": "27:06:2026 10:15:00.123"
-  },
-  {
-    "id": "message-uuid-2",
-    "conversation_id": "conversation-uuid-123",
-    "role": "assistant",
-    "content": "Based on the analyzed contracts, the key terms include...",
+    "query": "What are the key terms in our contracts?",
+    "response": "Based on the analyzed contracts, the key terms include...",
     "created_at": "27:06:2026 10:15:02.512"
   }
 ]
@@ -639,8 +632,6 @@ Return persisted messages for one conversation owned by the authenticated user.
 
 **Errors:**
 - `404 Not Found` — conversation does not exist or does not belong to the authenticated user
-
-**Errors:**
 - `502 Bad Gateway` — agent orchestration failed (LLM/tool failure surfaced as `AgentError`)
 - `500 Internal Server Error` — unexpected unhandled server error
 

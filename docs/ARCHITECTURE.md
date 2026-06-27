@@ -136,7 +136,7 @@ POST /v1/chat/invoke { "query": "...", "conversation_id": optional }
 
     → loop back to Agent node until no more tool calls
 
-  → persist USER and ASSISTANT turns in chat_messages
+  → persist one Q/A turn row in chat_messages (user_query + assistant_response)
   → update chat_conversations.updated_at
   → return { response: "...", conversation_id: "..." }
 

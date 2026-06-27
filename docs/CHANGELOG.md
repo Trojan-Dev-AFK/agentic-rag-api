@@ -24,13 +24,20 @@ Project history up to 2026-06-27.
   - Creates a new conversation when `conversation_id` is absent.
   - Validates user/company ownership when `conversation_id` is provided.
   - Loads prior turns into graph input context.
-  - Persists both user and assistant turns for every invoke.
+  - Persists one row per chat turn in `chat_messages` (`user_query` + `assistant_response`).
 - Startup schema verification now requires chat history tables.
 
 ### Database
 
 - Added migration `0005_add_chat_history_tables.py`.
-- Applied migration path now includes `0001 -> 0005`.
+- Added migration `0006_chat_messages_single_turn_rows.py`.
+- Added migration `0007_remove_legacy_chat_message_columns.py`.
+- Applied migration path now includes `0001 -> 0007`.
+
+### Removed
+
+- Legacy chat columns `chat_messages.role` and `chat_messages.content`.
+- Legacy enum type `chatmessagerole`.
 
 ### Testing
 
