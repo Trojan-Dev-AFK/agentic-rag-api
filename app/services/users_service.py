@@ -14,6 +14,7 @@ logger = get_logger(__name__)
 
 _SUPER_ADMIN_ROLE_ERROR = "The super_admin role cannot be assigned via this endpoint. Use the bootstrap script."
 
+
 def _assert_same_company(current_user: User, target_company_id: str | None) -> None:
     """Raise 403 when company-scoped admin attempts cross-company user operation."""
     if target_company_id != current_user.company_id:

@@ -11,6 +11,7 @@ from app.services.common import get_by_id_or_404, sanitize_pagination
 
 logger = get_logger(__name__)
 
+
 async def create_company(*, company_data: CompanyCreate, db: AsyncSession, current_user: User) -> Company:
     """Create a company, enforcing unique name constraint at application level."""
     result = await db.execute(select(Company).filter(Company.name == company_data.name))

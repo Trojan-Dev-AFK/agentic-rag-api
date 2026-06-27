@@ -34,6 +34,7 @@ from app.services.common import sanitize_pagination
 
 logger = get_logger(__name__)
 
+
 def _conversation_list_cache_key(*, user_id: str, company_id: str) -> str:
     return f"cache:chat:conversations:{company_id}:{user_id}"
 

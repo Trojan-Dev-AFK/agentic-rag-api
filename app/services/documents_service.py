@@ -15,6 +15,7 @@ from app.storage import get_storage
 
 logger = get_logger(__name__)
 
+
 def _list_cache_key(*, current_user: User, company_id: str | None) -> str:
     if current_user.role == UserRole.ADMIN:
         return f"cache:docs:list:admin:{current_user.company_id}"
