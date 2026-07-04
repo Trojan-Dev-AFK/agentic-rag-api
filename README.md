@@ -56,6 +56,7 @@ Full setup guide: [docs/RUNBOOK.md](docs/RUNBOOK.md)
 | `GET` | `/v1/documents/{id}` | Admin (own company) or Super Admin |
 | `DELETE` | `/v1/documents/{id}` | Admin (own company) or Super Admin |
 | `POST` | `/v1/chat/invoke` | Admin or Employee |
+| `POST` | `/v1/chat/stream` | Admin or Employee |
 | `GET` | `/v1/chat/conversations` | Admin or Employee |
 | `GET` | `/v1/chat/conversations/{conversation_id}/messages` | Admin or Employee |
 | `GET` | `/healthz` | Public (liveness) |

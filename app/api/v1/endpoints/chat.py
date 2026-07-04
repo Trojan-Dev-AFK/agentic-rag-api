@@ -1,6 +1,7 @@
 """Chat endpoint — submits a query to the LangGraph RAG agent."""
 
 from fastapi import APIRouter, Depends, Header, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import require_company_user
@@ -45,6 +46,46 @@ async def invoke_agent(
         current_user=current_user,
     )
     return ChatResponse(response=response_text, conversation_id=conversation_id)
+
+
+@router.post(
+    "/stream",
+    responses={
+        200: {
+            "content": {
+                "text/event-stream": {
+                    "example": 'event: token\\ndata: {"text":"Hello"}\\n\\nevent: done\\ndata: {"conversation_id":"...","cached":false}\\n\\n'
+                }
+            },
+            "description": "Server-sent event stream of incremental chat tokens and completion metadata.",
+        },
+        403: {"description": "Forbidden — `super_admin` accounts cannot use chat."},
+        429: {"description": "Too many chat requests."},
+    },
+)
+async def stream_agent(
+    request: ChatRequest,
+    idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_company_user),
+):
+    """Stream the chat response as SSE token events, then emit a final done event."""
+    event_stream = await chat_service.create_streaming_response(
+        query=request.query,
+        conversation_id=request.conversation_id,
+        idempotency_key=idempotency_key,
+        db=db,
+        current_user=current_user,
+    )
+    return StreamingResponse(
+        event_stream,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/conversations", response_model=list[ChatConversationResponse])

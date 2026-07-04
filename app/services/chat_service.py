@@ -1,8 +1,12 @@
 """Business logic for invoking the LangGraph chat workflow."""
 
+import json
 import time
 import uuid
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import HTTPException, status
 from langchain_core.messages import AIMessage, HumanMessage
@@ -101,27 +105,34 @@ def _build_history_messages(history_rows: list[ChatMessage]) -> list[HumanMessag
     return messages
 
 
-async def invoke_agent(
+@dataclass(slots=True)
+class ChatInvokeContext:
+    """Prepared context required to execute a chat invocation or stream."""
+
+    conversation: ChatConversation
+    history_messages: list[HumanMessage | AIMessage]
+    idem_cache_key: str | None
+    cached_response: tuple[str, str] | None
+
+
+@dataclass(slots=True)
+class StreamRunState:
+    """Mutable state collected while consuming LangGraph stream events."""
+
+    streamed_parts: list[str]
+    final_message_text: str | None = None
+    failed: bool = False
+
+
+async def _prepare_chat_invoke_context(
     *,
     query: str,
     current_user: User,
     db: AsyncSession,
     conversation_id: str | None,
     idempotency_key: str | None,
-) -> tuple[str, str]:
-    """Run the graph workflow, persist user/assistant turns, and return answer plus conversation ID."""
-    logger.info(
-        "Chat query received",
-        extra={
-            "user_id": current_user.id,
-            "role": str(current_user.role),
-            "company_id": current_user.company_id,
-            "conversation_id": conversation_id,
-            "idempotency_key": bool(idempotency_key),
-            "query_preview": query[:120],
-        },
-    )
-
+) -> ChatInvokeContext:
+    """Validate request and hydrate context required by chat execution."""
     if not current_user.company_id:
         logger.warning(
             "Chat blocked — user has no company scope",
@@ -142,12 +153,11 @@ async def invoke_agent(
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many chat requests")
 
     idem_cache_key: str | None = None
+    cached_response: tuple[str, str] | None = None
     normalized_idem = (idempotency_key or "").strip()
     if normalized_idem:
         idem_cache_key = f"idem:chat:{current_user.id}:{normalized_idem}"
-        cached = await idempotency_get(key=idem_cache_key)
-        if cached:
-            return cached
+        cached_response = await idempotency_get(key=idem_cache_key)
 
     if conversation_id:
         conversation = await _get_scoped_conversation(
@@ -172,11 +182,298 @@ async def invoke_agent(
     history_rows = history_result.scalars().all()
     history_messages = _build_history_messages(history_rows)
 
+    return ChatInvokeContext(
+        conversation=conversation,
+        history_messages=history_messages,
+        idem_cache_key=idem_cache_key,
+        cached_response=cached_response,
+    )
+
+
+async def _persist_chat_turn(
+    *,
+    query: str,
+    response: str,
+    conversation: ChatConversation,
+    current_user: User,
+    db: AsyncSession,
+) -> None:
+    """Persist one completed user/assistant turn and invalidate related caches."""
+    db.add(
+        ChatMessage(
+            conversation_id=conversation.id,
+            user_query=query,
+            assistant_response=response,
+        )
+    )
+    conversation.updated_at = datetime.now(UTC)
+    await db.commit()
+
+    await cache_delete_prefix(
+        prefix=_conversation_list_cache_key(user_id=current_user.id, company_id=current_user.company_id)
+    )
+    await cache_delete_prefix(prefix=_conversation_messages_cache_key(conversation_id=conversation.id))
+
+
+def _sse(event: str, data: dict[str, Any]) -> str:
+    """Build a server-sent event payload line block."""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _extract_stream_text(chunk: Any) -> str:
+    """Extract text content from model stream chunks across provider payload shapes."""
+    content = getattr(chunk, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    if isinstance(content, dict):
+        text = content.get("text")
+        return text if isinstance(text, str) else ""
+    return ""
+
+
+def _extract_final_message_text(output: Any) -> str | None:
+    """Extract final assistant message text from a completed graph output payload."""
+    if not isinstance(output, dict):
+        return None
+    messages = output.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return None
+    last_message = messages[-1]
+    content = getattr(last_message, "content", None)
+    if isinstance(content, str):
+        return content
+    if content is not None:
+        return str(content)
+    return None
+
+
+def _event_to_sse(*, event: dict[str, Any], stream_state: StreamRunState) -> str | None:
+    """Translate LangGraph runtime events into outward SSE events."""
+    event_name = event.get("event")
+    if event_name == "on_chat_model_stream":
+        chunk_text = _extract_stream_text(event.get("data", {}).get("chunk"))
+        if chunk_text:
+            stream_state.streamed_parts.append(chunk_text)
+            return _sse("token", {"text": chunk_text})
+        return None
+
+    if event_name == "on_tool_start":
+        tool_name = event.get("name") or "tool"
+        return _sse("tool_start", {"name": tool_name})
+
+    if event_name == "on_tool_end":
+        tool_name = event.get("name") or "tool"
+        return _sse("tool_end", {"name": tool_name})
+
+    if event_name == "on_chain_end":
+        extracted = _extract_final_message_text(event.get("data", {}).get("output"))
+        if extracted:
+            stream_state.final_message_text = extracted
+    return None
+
+
+async def _stream_runtime_events(
+    *,
+    initial_state: dict[str, Any],
+    current_user: User,
+    stream_state: StreamRunState,
+) -> AsyncIterator[str]:
+    """Yield SSE payloads while consuming LangGraph runtime events."""
+    search_scope_token = set_search_company_scope(current_user.company_id)
+    search_query_state_token = set_search_query_state()
+    try:
+        async for event in app_graph.astream_events(initial_state, config={"recursion_limit": 8}, version="v2"):
+            payload = _event_to_sse(event=event, stream_state=stream_state)
+            if payload:
+                yield payload
+    except GraphRecursionError as exc:
+        stream_state.failed = True
+        logger.error(
+            "Streaming agent halted by recursion limit",
+            extra={
+                "user_id": current_user.id,
+                "company_id": current_user.company_id,
+            },
+            exc_info=exc,
+        )
+        yield _sse(
+            "error",
+            {
+                "detail": "The agent could not converge on an answer. Please rephrase your question with more specific details.",
+            },
+        )
+    except Exception as exc:
+        stream_state.failed = True
+        logger.error(
+            "Streaming agent invocation failed",
+            extra={
+                "user_id": current_user.id,
+                "company_id": current_user.company_id,
+            },
+            exc_info=exc,
+        )
+        yield _sse("error", {"detail": "The agent failed to process your request. Please try again."})
+    finally:
+        reset_search_query_state(search_query_state_token)
+        reset_search_company_scope(search_scope_token)
+
+
+async def _stream_agent_events(
+    *,
+    query: str,
+    current_user: User,
+    db: AsyncSession,
+    context: ChatInvokeContext,
+) -> AsyncIterator[str]:
+    """Yield SSE events for streaming chat and persist the final response when complete."""
+    if context.cached_response:
+        cached_text, cached_conversation_id = context.cached_response
+        yield _sse("token", {"text": cached_text})
+        yield _sse(
+            "done",
+            {
+                "conversation_id": cached_conversation_id,
+                "cached": True,
+            },
+        )
+        return
+
+    start = time.monotonic()
+    initial_state = {"messages": [*context.history_messages, HumanMessage(content=query)]}
+    stream_state = StreamRunState(streamed_parts=[])
+
+    async for payload in _stream_runtime_events(
+        initial_state=initial_state,
+        current_user=current_user,
+        stream_state=stream_state,
+    ):
+        yield payload
+
+    if stream_state.failed:
+        return
+
+    final_text = "".join(stream_state.streamed_parts).strip()
+    if not final_text and stream_state.final_message_text:
+        final_text = stream_state.final_message_text.strip()
+
+    if not final_text:
+        logger.error(
+            "Streaming completed without text output",
+            extra={
+                "user_id": current_user.id,
+                "company_id": current_user.company_id,
+                "conversation_id": context.conversation.id,
+            },
+        )
+        yield _sse("error", {"detail": "The agent returned an empty response."})
+        return
+
+    await _persist_chat_turn(
+        query=query,
+        response=final_text,
+        conversation=context.conversation,
+        current_user=current_user,
+        db=db,
+    )
+
+    elapsed = time.monotonic() - start
+    logger.info(
+        "Streaming chat response ready",
+        extra={
+            "user_id": current_user.id,
+            "company_id": current_user.company_id,
+            "conversation_id": context.conversation.id,
+            "elapsed_s": round(elapsed, 3),
+        },
+    )
+
+    if context.idem_cache_key:
+        await idempotency_set(
+            key=context.idem_cache_key,
+            response=final_text,
+            conversation_id=context.conversation.id,
+            ttl_seconds=settings.CHAT_IDEMPOTENCY_TTL_SECONDS,
+        )
+
+    yield _sse(
+        "done",
+        {
+            "conversation_id": context.conversation.id,
+            "cached": False,
+        },
+    )
+
+
+async def create_streaming_response(
+    *,
+    query: str,
+    current_user: User,
+    db: AsyncSession,
+    conversation_id: str | None,
+    idempotency_key: str | None,
+) -> AsyncIterator[str]:
+    """Return an SSE generator that streams the chat answer and persists the final turn."""
+    context = await _prepare_chat_invoke_context(
+        query=query,
+        current_user=current_user,
+        db=db,
+        conversation_id=conversation_id,
+        idempotency_key=idempotency_key,
+    )
+    return _stream_agent_events(
+        query=query,
+        current_user=current_user,
+        db=db,
+        context=context,
+    )
+
+
+async def invoke_agent(
+    *,
+    query: str,
+    current_user: User,
+    db: AsyncSession,
+    conversation_id: str | None,
+    idempotency_key: str | None,
+) -> tuple[str, str]:
+    """Run the graph workflow, persist user/assistant turns, and return answer plus conversation ID."""
+    logger.info(
+        "Chat query received",
+        extra={
+            "user_id": current_user.id,
+            "role": str(current_user.role),
+            "company_id": current_user.company_id,
+            "conversation_id": conversation_id,
+            "idempotency_key": bool(idempotency_key),
+            "query_preview": query[:120],
+        },
+    )
+
+    context = await _prepare_chat_invoke_context(
+        query=query,
+        current_user=current_user,
+        db=db,
+        conversation_id=conversation_id,
+        idempotency_key=idempotency_key,
+    )
+    if context.cached_response:
+        return context.cached_response
+
     start = time.monotonic()
     search_scope_token = set_search_company_scope(current_user.company_id)
     search_query_state_token = set_search_query_state()
     try:
-        initial_state = {"messages": [*history_messages, HumanMessage(content=query)]}
+        initial_state = {"messages": [*context.history_messages, HumanMessage(content=query)]}
         final_state = await app_graph.ainvoke(initial_state, config={"recursion_limit": 8})
     except GraphRecursionError as exc:
         elapsed = time.monotonic() - start
@@ -213,41 +510,34 @@ async def invoke_agent(
     if not isinstance(final_message, str):
         final_message = str(final_message)
 
-    db.add(
-        ChatMessage(
-            conversation_id=conversation.id,
-            user_query=query,
-            assistant_response=final_message,
-        )
+    await _persist_chat_turn(
+        query=query,
+        response=final_message,
+        conversation=context.conversation,
+        current_user=current_user,
+        db=db,
     )
-    conversation.updated_at = datetime.now(UTC)
-    await db.commit()
-
-    await cache_delete_prefix(
-        prefix=_conversation_list_cache_key(user_id=current_user.id, company_id=current_user.company_id)
-    )
-    await cache_delete_prefix(prefix=_conversation_messages_cache_key(conversation_id=conversation.id))
 
     logger.info(
         "Chat response ready",
         extra={
             "user_id": current_user.id,
             "company_id": current_user.company_id,
-            "conversation_id": conversation.id,
+            "conversation_id": context.conversation.id,
             "elapsed_s": round(elapsed, 3),
             "message_turns": len(final_state["messages"]),
         },
     )
 
-    if idem_cache_key:
+    if context.idem_cache_key:
         await idempotency_set(
-            key=idem_cache_key,
+            key=context.idem_cache_key,
             response=final_message,
-            conversation_id=conversation.id,
+            conversation_id=context.conversation.id,
             ttl_seconds=settings.CHAT_IDEMPOTENCY_TTL_SECONDS,
         )
 
-    return final_message, conversation.id
+    return final_message, context.conversation.id
 
 
 async def list_conversations(

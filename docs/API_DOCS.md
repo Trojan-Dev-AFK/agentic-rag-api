@@ -620,6 +620,112 @@ Invoke the agent with a natural language query. Returns a grounded conversationa
 
 ---
 
+### `POST /v1/chat/stream`
+
+**Access:** `admin` and `employee` (company users only); `super_admin` blocked
+
+Stream the agent response as **Server-Sent Events (SSE)**.
+
+**Safeguards:**
+- Same rate limiting and company scoping as `/v1/chat/invoke`.
+- Optional idempotency via `X-Idempotency-Key`.
+- Conversation ownership checks are identical to bulk invoke.
+
+**Request:**
+```json
+{
+  "query": "Summarize payment terms in our latest contracts",
+  "conversation_id": "optional-existing-conversation-uuid"
+}
+```
+
+**Headers:**
+- `Authorization: Bearer <token>`
+- `Content-Type: application/json`
+- `Accept: text/event-stream`
+
+**Response (200 OK):**
+- `Content-Type: text/event-stream`
+- Stream of events until completion.
+
+**Event types:**
+- `token`: incremental assistant text chunk
+- `tool_start`: tool invocation started
+- `tool_end`: tool invocation completed
+- `error`: non-successful terminal condition
+- `done`: successful terminal event with conversation metadata
+
+**Example stream payload:**
+```text
+event: token
+data: {"text":"Based on your uploaded contracts,"}
+
+event: token
+data: {"text":" payment is due within 30 days."}
+
+event: done
+data: {"conversation_id":"conversation-uuid-123","cached":false}
+```
+
+**Notes:**
+- The server persists one final assistant message when generation completes.
+- If idempotency cache is hit, one `token` event may contain the full cached response followed by `done` with `cached=true`.
+- Treat `error` as terminal for that request.
+
+**cURL example:**
+```bash
+curl -N -X POST "http://localhost:8000/v1/chat/stream" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{"query":"Summarize the latest policy updates"}'
+```
+
+**JavaScript (Fetch + stream parser) example:**
+```javascript
+const res = await fetch("http://localhost:8000/v1/chat/stream", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+    Accept: "text/event-stream",
+  },
+  body: JSON.stringify({ query: "Summarize the latest policy updates" }),
+});
+
+const reader = res.body.getReader();
+const decoder = new TextDecoder();
+let buffer = "";
+
+while (true) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  buffer += decoder.decode(value, { stream: true });
+
+  const events = buffer.split("\n\n");
+  buffer = events.pop() ?? "";
+
+  for (const rawEvent of events) {
+    const eventLine = rawEvent.split("\n").find((line) => line.startsWith("event: "));
+    const dataLine = rawEvent.split("\n").find((line) => line.startsWith("data: "));
+    if (!eventLine || !dataLine) continue;
+
+    const eventName = eventLine.slice(7).trim();
+    const payload = JSON.parse(dataLine.slice(6));
+
+    if (eventName === "token") {
+      appendToUi(payload.text);
+    } else if (eventName === "done") {
+      saveConversationId(payload.conversation_id);
+    } else if (eventName === "error") {
+      showError(payload.detail);
+    }
+  }
+}
+```
+
+---
+
 ### `GET /v1/chat/conversations`
 
 **Access:** `admin` and `employee` (company users only); `super_admin` blocked
